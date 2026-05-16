@@ -1,0 +1,2136 @@
+import { useEffect, useState } from "react";
+import api from "./api";
+
+const categories = ["Clothing", "Electronics", "Bike", "Cars", "Furniture", "House"];
+const authRoles = [
+  { id: "user", label: "User" },
+  { id: "delivery", label: "Delivery" },
+  { id: "admin", label: "Admin" },
+];
+
+const initialFormState = {
+  category: "",
+  rentCost: "",
+  brandName: "",
+  productDescription: "",
+  buildingNo: "",
+  landmark: "",
+  street: "",
+  village: "",
+  city: "",
+  district: "",
+  state: "",
+  address: "",
+  pinCode: "",
+  phoneNumber: "",
+};
+
+const initialRentFormState = {
+  panNumber: "",
+  aadhaarNumber: "",
+  phoneNumber: "",
+  buildingNo: "",
+  landmark: "",
+  street: "",
+  village: "",
+  city: "",
+  district: "",
+  state: "",
+  address: "",
+  pinCode: "",
+  rentalDays: "",
+};
+
+const initialAuthFormState = {
+  username: "",
+  email: "",
+  phoneNumber: "",
+  password: "",
+  buildingNo: "",
+  landmark: "",
+  street: "",
+  village: "",
+  city: "",
+  district: "",
+  state: "",
+  address: "",
+};
+
+const restrictedSections = ["add-item", "your-items", "your-orders", "pickup-delivery"];
+
+const roleThemes = {
+  guest: {
+    shellClass: "role-guest",
+    eyebrow: "Trusted local renting",
+    title: "rentera",
+    subtitle: "Marketplace access",
+    homeLabel: "Home",
+    pickupLabel: "Pickup Delivery",
+  },
+  user: {
+    shellClass: "role-user",
+    // eyebrow: "Renter and seller workspace",
+    // title: "Rentera User Hub",
+    title: "rentera",
+    subtitle: "Listings, rentals, and orders",
+    homeLabel: "Marketplace",
+    pickupLabel: "Pickup Delivery",
+  },
+  delivery: {
+    shellClass: "role-delivery",
+    eyebrow: "Field operations console",
+    title: "rentera",
+    subtitle: "Assigned jobs and route tracking",
+    homeLabel: "Delivery Desk",
+    pickupLabel: "Route Queue",
+  },
+  admin: {
+    shellClass: "role-admin",
+    eyebrow: "Operations control room",
+    title: "rentera",
+    subtitle: "Oversight across logistics",
+    homeLabel: "Control Room",
+    pickupLabel: "Logistics Board",
+  },
+};
+
+function resolveInitialSection() {
+  return window.location.pathname === "/pickup_delivery" ? "pickup-delivery" : "auth";
+}
+
+function formatAddressDetail(values) {
+  const addressParts = [
+    values.buildingNo,
+    values.landmark ? `Landmark: ${values.landmark}` : "",
+    values.street ? `Street: ${values.street}` : "",
+    values.village ? `Village: ${values.village}` : "",
+    values.city ? `City: ${values.city}` : "",
+    values.district ? `District: ${values.district}` : "",
+    values.state ? `State: ${values.state}` : "",
+    values.address,
+  ].filter(Boolean);
+
+  return addressParts.join(", ");
+}
+
+/**
+ * Calculates a proximity score between two addresses.
+ * Higher score means the addresses are likely closer.
+ */
+function calculateProximityScore(userAddress, targetAddress) {
+  if (!userAddress || !targetAddress) return 0;
+
+  const u = userAddress.toLowerCase();
+  const t = targetAddress.toLowerCase();
+
+  let score = 0;
+
+  // Pin code match is the strongest signal (6-digit format)
+  const pinRegex = /\b\d{6}\b/g;
+  const uPins = u.match(pinRegex) || [];
+  const tPins = t.match(pinRegex) || [];
+
+  for (const pin of uPins) {
+    if (tPins.includes(pin)) score += 1000;
+  }
+
+  // Match common address components (City, District, Street names)
+  // Filtering for words > 3 chars to avoid common small words
+  const components = u.split(/[,\s]+/).filter((c) => c.length > 3);
+  for (const comp of components) {
+    if (t.includes(comp)) {
+      score += 10;
+    }
+  }
+
+  return score;
+}
+
+function buildMenuSections(currentUser) {
+  const roleTheme = roleThemes[currentUser?.role || "guest"];
+  const sections = [
+    { id: "auth", label: "Auth" },
+    { id: "browse", label: roleTheme.homeLabel },
+  ];
+
+  if (currentUser?.role === "user") {
+    sections.push(
+      { id: "add-item", label: "Add item" },
+      { id: "your-items", label: "Your item" },
+      { id: "your-orders", label: "Your order" },
+    );
+  }
+
+  if (currentUser?.role === "delivery" || currentUser?.role === "admin") {
+    sections.push({ id: "pickup-delivery", label: roleTheme.pickupLabel });
+  }
+
+  sections.push({ id: "help", label: "Help" });
+  return sections;
+}
+
+export default function App() {
+  const [activeSection, setActiveSection] = useState(() => {
+    const storedUser = window.localStorage.getItem("rentera-user");
+    return storedUser ? (window.location.pathname === "/pickup_delivery" ? "pickup-delivery" : "browse") : resolveInitialSection();
+  });
+  const [selectedCategory, setSelectedCategory] = useState("all");
+  const [allItems, setAllItems] = useState([]);
+  const [catalogItems, setCatalogItems] = useState([]);
+  const [orders, setOrders] = useState([]);
+  const [deliveryOrders, setDeliveryOrders] = useState([]);
+  const [formState, setFormState] = useState(initialFormState);
+  const [files, setFiles] = useState({
+    mainImage: null,
+    additionalImage: null,
+    video: null,
+  });
+  const [previews, setPreviews] = useState({
+    mainImage: "",
+    additionalImage: "",
+    video: "",
+  });
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [message, setMessage] = useState("");
+  const [selectedRentItemId, setSelectedRentItemId] = useState("");
+  const [rentFormState, setRentFormState] = useState(initialRentFormState);
+  const [editingItemId, setEditingItemId] = useState("");
+  const [currentUser, setCurrentUser] = useState(() => {
+    const storedUser = window.localStorage.getItem("rentera-user");
+    return storedUser ? JSON.parse(storedUser) : null;
+  });
+  const [authMode, setAuthMode] = useState("login");
+  const [authRole, setAuthRole] = useState("user");
+  const [authFormState, setAuthFormState] = useState(initialAuthFormState);
+  const [deliveryView, setDeliveryView] = useState("incomplete");
+  const [orderView, setOrderView] = useState("you-rent");
+  const [adminDeliveryForm, setAdminDeliveryForm] = useState(initialAuthFormState);
+  const [adminMessage, setAdminMessage] = useState("");
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [otp, setOtp] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [selectedViewItemId, setSelectedViewItemId] = useState("");
+
+  useEffect(() => {
+    async function loadData() {
+      try {
+        setLoading(true);
+
+        const requests = [
+          api.get("/items", { params: selectedCategory === "all" ? {} : { category: selectedCategory } }),
+          currentUser?.role === "user" ? api.get("/items", { params: { ownerUserId: currentUser._id } }) : Promise.resolve({ data: [] }),
+          currentUser?.role === "user" ? api.get("/orders", { params: { userId: currentUser._id } }) : Promise.resolve({ data: [] }),
+          currentUser?.role === "delivery"
+            ? api.get("/orders", { params: { userId: currentUser._id, view: "pickup_delivery" } })
+            : currentUser?.role === "admin"
+              ? api.get("/orders", { params: { view: "pickup_delivery" } })
+              : Promise.resolve({ data: [] }),
+        ];
+
+        const [catalogResponse, allItemsResponse, ordersResponse, deliveryOrdersResponse] = await Promise.all(requests);
+        setCatalogItems(catalogResponse.data);
+        setAllItems(allItemsResponse.data);
+        setOrders(ordersResponse.data);
+        setDeliveryOrders(deliveryOrdersResponse.data);
+      } catch (error) {
+        setMessage(resolveError(error, "Unable to load data."));
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    loadData();
+  }, [currentUser, selectedCategory]);
+
+  useEffect(() => {
+    if (currentUser) {
+      window.localStorage.setItem("rentera-user", JSON.stringify(currentUser));
+      return;
+    }
+
+    window.localStorage.removeItem("rentera-user");
+    setAllItems([]);
+    setOrders([]);
+    setDeliveryOrders([]);
+    setSelectedRentItemId("");
+    setRentFormState(initialRentFormState);
+    resetItemForm();
+  }, [currentUser]);
+
+  useEffect(() => {
+    const nextPath = activeSection === "pickup-delivery" ? "/pickup_delivery" : "/";
+    if (window.location.pathname !== nextPath) {
+      window.history.replaceState({}, "", nextPath);
+    }
+  }, [activeSection]);
+
+  useEffect(() => {
+    if (isMobileMenuOpen) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "auto";
+    }
+  }, [isMobileMenuOpen]);
+
+  useEffect(() => {
+    function handlePopState() {
+      setActiveSection(window.location.pathname === "/pickup_delivery" ? "pickup-delivery" : currentUser ? "browse" : "auth");
+    }
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (!currentUser && restrictedSections.includes(activeSection)) {
+      setActiveSection(resolveInitialSection());
+    }
+  }, [activeSection, currentUser]);
+
+  useEffect(() => {
+    if (currentUser?.role === "user") {
+      return;
+    }
+
+    if (["add-item", "your-items", "your-orders"].includes(activeSection)) {
+      setActiveSection(currentUser?.role === "delivery" || currentUser?.role === "admin" ? "pickup-delivery" : "browse");
+    }
+  }, [activeSection, currentUser]);
+
+  useEffect(() => {
+    if (authRole === "admin" && authMode === "register") {
+      setAuthMode("login");
+    }
+  }, [authMode, authRole]);
+
+  function handleInputChange(event) {
+    const { name, value } = event.target;
+    setFormState((current) => ({ ...current, [name]: value }));
+  }
+
+  function handleRentInputChange(event) {
+    const { name, value } = event.target;
+    setRentFormState((current) => ({ ...current, [name]: value }));
+  }
+
+  function handleAuthInputChange(event) {
+    const { name, value } = event.target;
+    setAuthFormState((current) => ({ ...current, [name]: value }));
+  }
+
+  function handleAdminInputChange(event) {
+    const { name, value } = event.target;
+    setAdminDeliveryForm((current) => ({ ...current, [name]: value }));
+  }
+
+  function handleFileChange(event) {
+    const { name, files: selectedFiles } = event.target;
+    const file = selectedFiles?.[0] || null;
+
+    setFiles((current) => ({ ...current, [name]: file }));
+    setPreviews((current) => ({
+      ...current,
+      [name]: file ? URL.createObjectURL(file) : "",
+    }));
+  }
+
+  function resetItemForm() {
+    setFormState(initialFormState);
+    setFiles({ mainImage: null, additionalImage: null, video: null });
+    setPreviews({ mainImage: "", additionalImage: "", video: "" });
+    setEditingItemId("");
+  }
+
+  function resetAuthForm(nextMode = authMode) {
+    setAuthMode(nextMode);
+    setAuthFormState(initialAuthFormState);
+  }
+
+  function handleRoleChange(nextRole) {
+    setAuthRole(nextRole);
+    setMessage("");
+    resetAuthForm("login");
+    if (nextRole === "admin") {
+      setAuthFormState({
+        ...initialAuthFormState,
+        email: "singh01@gmail.com",
+        password: "anshu1234",
+      });
+    }
+  }
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+
+    if (!currentUser || currentUser.role !== "user") {
+      setActiveSection("auth");
+      setMessage("Only user accounts can publish an item.");
+      return;
+    }
+
+    if (!/^\d{6}$/.test(formState.pinCode)) {
+      setMessage("Pin code must be exactly 6 digits.");
+      return;
+    }
+
+    if (!/^\d{10}$/.test(formState.phoneNumber)) {
+      setMessage("Phone number must be exactly 10 digits.");
+      return;
+    }
+
+    if (!editingItemId && !files.mainImage) {
+      setMessage("Main image is required.");
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      setMessage("");
+
+      const combinedAddress = formatAddressDetail(formState);
+
+      if (editingItemId) {
+        const response = await api.put(`/items/${editingItemId}`, {
+          ...formState,
+          address: combinedAddress,
+          ownerUserId: currentUser._id,
+        });
+        const updatedItem = response.data;
+
+        setAllItems((current) => current.map((item) => (item._id === updatedItem._id ? updatedItem : item)));
+        setCatalogItems((current) => {
+          const withoutItem = current.filter((item) => item._id !== updatedItem._id);
+          if (selectedCategory !== "all" && selectedCategory !== updatedItem.category) {
+            return withoutItem;
+          }
+
+          return [updatedItem, ...withoutItem];
+        });
+        setOrders((current) =>
+          current.map((order) =>
+            order.item?._id === updatedItem._id
+              ? {
+                ...order,
+                item: updatedItem,
+              }
+              : order,
+          ),
+        );
+        setDeliveryOrders((current) =>
+          current.map((order) =>
+            order.item?._id === updatedItem._id
+              ? {
+                ...order,
+                item: updatedItem,
+              }
+              : order,
+          ),
+        );
+        resetItemForm();
+        setMessage("Item updated successfully.");
+      } else {
+        const payload = new FormData();
+        Object.entries({ ...formState, address: combinedAddress }).forEach(([key, value]) => {
+          payload.append(key, value);
+        });
+        payload.append("ownerUserId", currentUser._id);
+        Object.entries(files).forEach(([key, file]) => {
+          if (file) {
+            payload.append(key, file);
+          }
+        });
+
+        const response = await api.post("/items", payload, {
+          headers: { "Content-Type": "multipart/form-data" },
+        });
+
+        setAllItems((current) => [response.data, ...current]);
+        setCatalogItems((current) =>
+          selectedCategory === "all" || selectedCategory === response.data.category
+            ? [response.data, ...current]
+            : current,
+        );
+        resetItemForm();
+        setMessage("Item published successfully.");
+      }
+
+      setActiveSection("your-items");
+    } catch (error) {
+      setMessage(resolveError(error, editingItemId ? "Failed to update item." : "Failed to publish item."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function beginEditItem(item) {
+    setEditingItemId(item._id);
+    setFormState({
+      category: item.category,
+      rentCost: String(item.rentCost),
+      brandName: item.brandName,
+      productDescription: item.productDescription,
+      address: item.address,
+      pinCode: item.pinCode,
+      phoneNumber: item.phoneNumber,
+    });
+    setFiles({ mainImage: null, additionalImage: null, video: null });
+    setPreviews({
+      mainImage: item.media.mainImage || "",
+      additionalImage: item.media.additionalImage || "",
+      video: item.media.video || "",
+    });
+    setMessage("");
+    setActiveSection("add-item");
+  }
+
+  async function handleDeleteItem(itemId) {
+    if (!currentUser || currentUser.role !== "user") {
+      setActiveSection("auth");
+      setMessage("Only user accounts can manage items.");
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      setMessage("");
+      await api.delete(`/items/${itemId}`, { params: { ownerUserId: currentUser._id } });
+      setAllItems((current) => current.filter((item) => item._id !== itemId));
+      setCatalogItems((current) => current.filter((item) => item._id !== itemId));
+      setOrders((current) => current.filter((order) => order.item?._id !== itemId));
+      setDeliveryOrders((current) => current.filter((order) => order.item?._id !== itemId));
+
+      if (editingItemId === itemId) {
+        resetItemForm();
+      }
+
+      setMessage("Item deleted successfully.");
+    } catch (error) {
+      setMessage(resolveError(error, "Failed to delete item."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleAuthSubmit(event) {
+    event.preventDefault();
+
+    if (authMode === "register" && authRole === "admin") {
+      setMessage("Admin account is login only.");
+      return;
+    }
+
+    if (authMode === "register" && !String(authFormState.username).trim()) {
+      setMessage("Username is required.");
+      return;
+    }
+
+    if (!/^\S+@\S+\.\S+$/.test(authFormState.email)) {
+      setMessage("Email must be valid.");
+      return;
+    }
+
+    if (authMode === "register" && !/^\d{10}$/.test(authFormState.phoneNumber)) {
+      setMessage("Phone number must be exactly 10 digits.");
+      return;
+    }
+
+    const combinedAuthAddress = formatAddressDetail(authFormState);
+    if (authMode === "register" && authRole === "delivery" && !combinedAuthAddress.trim()) {
+      setMessage("Address is required for delivery accounts.");
+      return;
+    }
+
+    if (authFormState.password.length < 6) {
+      setMessage("Password must be at least 6 characters.");
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      setMessage("");
+
+      const endpoint = authMode === "register" ? "/auth/register" : "/auth/login";
+      const payload =
+        authMode === "register"
+          ? {
+            ...authFormState,
+            address: combinedAuthAddress,
+            role: authRole,
+          }
+          : {
+            email: authFormState.email,
+            password: authFormState.password,
+            role: authRole,
+          };
+
+      const response = await api.post(endpoint, payload);
+      setCurrentUser(response.data.user);
+      resetAuthForm("login");
+      setActiveSection(response.data.user.role === "delivery" || response.data.user.role === "admin" ? "pickup-delivery" : "browse");
+      setMessage(authMode === "register" ? "Account created successfully." : "Logged in successfully.");
+    } catch (error) {
+      setMessage(resolveError(error, authMode === "register" ? "Failed to create account." : "Failed to log in."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleForgotPasswordSubmit(event) {
+    event.preventDefault();
+    try {
+      setSubmitting(true);
+      setMessage("");
+      console.log("Sending forgot password request to:", api.defaults.baseURL + "/auth/forgot-password", "with email:", authFormState.email);
+      const response = await api.post("/auth/forgot-password", { email: authFormState.email });
+      setMessage(response.data.message);
+      setAuthMode("reset-password");
+    } catch (error) {
+      setMessage(resolveError(error, "Failed to send OTP."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleResetPasswordSubmit(event) {
+    event.preventDefault();
+    try {
+      setSubmitting(true);
+      setMessage("");
+      const response = await api.post("/auth/reset-password", {
+        email: authFormState.email,
+        otp,
+        newPassword
+      });
+      setMessage(response.data.message);
+      setAuthMode("login");
+      setOtp("");
+      setNewPassword("");
+    } catch (error) {
+      setMessage(resolveError(error, "Failed to reset password."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleAdminCreateDelivery(event) {
+    event.preventDefault();
+
+    if (!currentUser || currentUser.role !== "admin") {
+      setAdminMessage("Only admin can create delivery accounts.");
+      return;
+    }
+
+    const combinedAddress = formatAddressDetail(adminDeliveryForm);
+    if (!combinedAddress.trim()) {
+      setAdminMessage("Address is required for delivery accounts.");
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      setAdminMessage("");
+
+      const response = await api.post("/auth/register-delivery", {
+        ...adminDeliveryForm,
+        address: combinedAddress,
+        adminEmail: "singh01@gmail.com",
+        adminPassword: "anshu1234",
+      });
+
+      setAdminMessage(`Success: Delivery account for ${response.data.user.username} created.`);
+      setAdminDeliveryForm(initialAuthFormState);
+    } catch (error) {
+      setAdminMessage(resolveError(error, "Failed to create delivery account."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleUpdateLocation(event) {
+    event.preventDefault();
+
+    if (!currentUser || currentUser.role !== "delivery") {
+      setMessage("Only delivery partners can update their location.");
+      return;
+    }
+
+    const combinedAddress = formatAddressDetail(authFormState);
+    if (!combinedAddress.trim()) {
+      setMessage("New location address is required.");
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      setMessage("");
+
+      const response = await api.put(`/auth/update/${currentUser._id}`, {
+        address: combinedAddress,
+      });
+
+      setCurrentUser(response.data.user);
+      setMessage("Location updated successfully.");
+    } catch (error) {
+      setMessage(resolveError(error, "Failed to update location."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function handleLogout() {
+    setCurrentUser(null);
+    setAuthRole("user");
+    resetAuthForm("login");
+    setActiveSection(resolveInitialSection());
+    setMessage("Logged out successfully.");
+  }
+
+  function beginRent(itemId) {
+    if (!currentUser) {
+      setActiveSection("auth");
+      setMessage("Log in first to rent an item.");
+      return;
+    }
+
+    if (currentUser.role !== "user") {
+      setMessage("Only user accounts can rent items.");
+      return;
+    }
+
+    setSelectedRentItemId(itemId);
+    setRentFormState(initialRentFormState);
+    setMessage("");
+  }
+
+  async function handleRentSubmit(event) {
+    event.preventDefault();
+
+    if (!currentUser || currentUser.role !== "user") {
+      setActiveSection("auth");
+      setMessage("Only user accounts can place an order.");
+      return;
+    }
+
+    if (!selectedRentItemId) {
+      setMessage("Select an item before placing an order.");
+      return;
+    }
+
+    if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/i.test(rentFormState.panNumber)) {
+      setMessage("PAN number must be a valid 10-character PAN.");
+      return;
+    }
+
+    if (!/^\d{12}$/.test(rentFormState.aadhaarNumber)) {
+      setMessage("Aadhaar number must be exactly 12 digits.");
+      return;
+    }
+
+    if (!/^\d{10}$/.test(rentFormState.phoneNumber)) {
+      setMessage("Phone number must be exactly 10 digits.");
+      return;
+    }
+
+    if (!/^\d{6}$/.test(rentFormState.pinCode)) {
+      setMessage("Pin code must be exactly 6 digits.");
+      return;
+    }
+
+    const combinedRentAddress = formatAddressDetail(rentFormState);
+    if (!combinedRentAddress.trim()) {
+      setMessage("Destination address is required.");
+      return;
+    }
+
+    if (!/^\d+$/.test(rentFormState.rentalDays) || Number(rentFormState.rentalDays) < 1) {
+      setMessage("Number of rental days must be at least 1.");
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      setMessage("");
+      const response = await api.post("/orders", {
+        userId: currentUser._id,
+        itemId: selectedRentItemId,
+        ...rentFormState,
+        address: combinedRentAddress,
+      });
+      setOrders((current) => [response.data, ...current]);
+
+      // Reload catalog to reflect updated item availability
+      const updatedCatalogResponse = await api.get("/items", { params: selectedCategory === "all" ? {} : { category: selectedCategory } });
+      setCatalogItems(updatedCatalogResponse.data);
+
+      setSelectedRentItemId("");
+      setRentFormState(initialRentFormState);
+      setActiveSection("your-orders");
+      setMessage("Order placed successfully.");
+    } catch (error) {
+      setMessage(resolveError(error, "Failed to place order."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleClaimItemDelivery(itemId) {
+    if (!currentUser || currentUser.role !== "delivery") {
+      setMessage("Only delivery partners can claim items.");
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      setMessage("");
+      const response = await api.post(`/orders/claim-item/${itemId}`, { deliveryUserId: currentUser._id });
+      const newOrder = response.data;
+
+      setDeliveryOrders((current) => {
+        const exists = current.some(o => o._id === newOrder._id);
+        if (exists) {
+          return current.map(o => o._id === newOrder._id ? newOrder : o);
+        }
+        return [newOrder, ...current];
+      });
+      setMessage("Delivery job created and assigned to you.");
+    } catch (error) {
+      setMessage(resolveError(error, "Failed to claim delivery."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleAcceptDelivery(orderId) {
+    if (!currentUser || currentUser.role !== "delivery") {
+      setMessage("Only delivery partners can accept a delivery.");
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      setMessage("");
+      const response = await api.post(`/orders/${orderId}/assign-delivery`, { deliveryUserId: currentUser._id });
+      const updatedOrder = response.data;
+      setDeliveryOrders((current) => current.map((order) => (order._id === updatedOrder._id ? updatedOrder : order)));
+      setMessage("Delivery added to your account.");
+    } catch (error) {
+      setMessage(resolveError(error, "Failed to add delivery."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleUpdateOrderStatus(orderId, nextStatus) {
+    if (!currentUser || currentUser.role !== "delivery") {
+      setMessage("Only delivery partners can update order status.");
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      setMessage("");
+      const response = await api.post(`/orders/${orderId}/update-status`, {
+        deliveryUserId: currentUser._id,
+        nextStatus
+      });
+      const updatedOrder = response.data;
+      setDeliveryOrders((current) => current.map((order) => (order._id === updatedOrder._id ? updatedOrder : order)));
+
+      // Reload catalog when item is returned to make it available for rent again
+      if (nextStatus === "ReturnedToSeller") {
+        const updatedCatalogResponse = await api.get("/items", { params: selectedCategory === "all" ? {} : { category: selectedCategory } });
+        setCatalogItems(updatedCatalogResponse.data);
+      }
+
+      setMessage(`Order status updated to ${nextStatus}.`);
+    } catch (error) {
+      setMessage(resolveError(error, "Failed to update order status."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const selectedRentItem = catalogItems.find((item) => item._id === selectedRentItemId);
+  const orderedItemIds = new Set(
+    orders
+      .filter((order) => order.status !== "ReturnedToSeller")
+      .map((order) => order.item?._id)
+      .filter(Boolean)
+  );
+  const menuSections = buildMenuSections(currentUser);
+  const assignedDeliveryOrders = deliveryOrders.filter((order) => order.deliveryPartner?._id === currentUser?._id);
+  const incompleteDeliveryOrders =
+    currentUser?.role === "delivery"
+      ? assignedDeliveryOrders.filter((order) => order.status !== "ReturnedToSeller")
+      : deliveryOrders.filter((order) => order.status !== "ReturnedToSeller");
+  const completedDeliveryOrders =
+    currentUser?.role === "delivery"
+      ? assignedDeliveryOrders.filter((order) => order.status === "ReturnedToSeller")
+      : deliveryOrders.filter((order) => order.status === "ReturnedToSeller");
+  const pickupDeliveryList = deliveryView === "completed"
+    ? completedDeliveryOrders
+    : currentUser?.role === "delivery"
+      ? incompleteDeliveryOrders
+      : deliveryOrders.filter((order) => order.status !== "ReturnedToSeller");
+  const currentRole = currentUser?.role || "guest";
+  const roleTheme = roleThemes[currentRole];
+  const openAdminOrders = deliveryOrders.filter((order) => !order.deliveryPartner).length;
+  const assignedAdminOrders = deliveryOrders.filter((order) => order.deliveryPartner && order.status !== "Delivered").length;
+
+  return (
+    <div className={`page-shell ${roleTheme.shellClass}`}>
+      <header className="topbar">
+        <div className="brand-block">
+          <div
+            className="brand-mark"
+            onClick={() => {
+              setActiveSection("auth");
+              setIsMobileMenuOpen(false);
+            }}
+            role="button"
+            tabIndex={0}
+            style={{ cursor: "pointer" }}
+            title="Go to account"
+          >
+            {currentUser ? currentUser.username[0].toUpperCase() : "R"}
+          </div>
+          <div>
+            <p className="eyebrow">{roleTheme.eyebrow}</p>
+            <h1>{roleTheme.title}</h1>
+          </div>
+        </div>
+
+        <button
+          className="mobile-menu-toggle"
+          onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+          aria-label="Toggle menu"
+        >
+          {isMobileMenuOpen ? "✕" : "☰"}
+        </button>
+
+        <nav className={`menu-strip ${isMobileMenuOpen ? "is-open" : ""}`} aria-label="Primary">
+          {menuSections.map((section) => (
+            <button
+              key={section.id}
+              className={`menu-link ${activeSection === section.id ? "is-active" : ""}`}
+              onClick={() => {
+                setActiveSection(section.id);
+                setIsMobileMenuOpen(false);
+              }}
+            >
+              {section.label}
+            </button>
+          ))}
+          {currentUser && (
+            <button
+              type="button"
+              className="menu-link logout-mobile"
+              onClick={() => {
+                handleLogout();
+                setIsMobileMenuOpen(false);
+              }}
+            >
+              Log out
+            </button>
+          )}
+        </nav>
+
+        <div className="toolbar">
+          {(currentRole === "guest" || currentRole === "user") && (
+            <label className="category-select">
+              <span>Category</span>
+              <select value={selectedCategory} onChange={(event) => setSelectedCategory(event.target.value)}>
+                <option value="all">All categories</option>
+                {categories.map((category) => (
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
+          {(currentRole === "delivery" || currentRole === "admin") && (
+            <div className="role-badge-panel">
+              <span>{roleTheme.subtitle}</span>
+              <strong>{currentRole === "delivery" ? `${incompleteDeliveryOrders.length} active jobs` : `${deliveryOrders.length} total logistics jobs`}</strong>
+            </div>
+          )}
+
+        </div>
+      </header>
+
+      <main className="content-area">
+        {activeSection === "auth" && (
+          <section className="panel">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Authentication</p>
+                <h3>{currentUser ? "Your account" : "Login or sign up"}</h3>
+              </div>
+            </div>
+
+            {currentUser ? (
+              <div className="profile-card">
+                <div className="detail-list">
+                  <span>Username: {currentUser.username}</span>
+                  <span>Email: {currentUser.email}</span>
+                  <span>Role: {currentUser.role}</span>
+                  {currentUser.phoneNumber ? <span>Phone number: {currentUser.phoneNumber}</span> : null}
+                  {currentUser.address ? <span>Address: {currentUser.address}</span> : null}
+                </div>
+                <div className="card-actions">
+                  <button type="button" className="primary-button" onClick={handleLogout}>
+                    Log out
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <form className="item-form" onSubmit={handleAuthSubmit}>
+                <div className="role-auth-grid">
+                  <article className={`role-auth-card ${authRole === "user" ? "is-active" : ""}`}>
+                    <span className="tag">User</span>
+                    <h4>Marketplace renter</h4>
+                    <p>Browse products, rent items, publish listings, and manage your own orders.</p>
+                  </article>
+                  <article className={`role-auth-card ${authRole === "delivery" ? "is-active" : ""}`}>
+                    <span className="tag">Delivery</span>
+                    <h4>Route operator</h4>
+                    <p>Claim pickup jobs, track incomplete deliveries, and mark completed handoffs.</p>
+                  </article>
+                  <article className={`role-auth-card ${authRole === "admin" ? "is-active" : ""}`}>
+                    <span className="tag">Admin</span>
+                    <h4>Operations control</h4>
+                    <p>Monitor logistics flow, open jobs, assigned jobs, and delivery outcomes.</p>
+                  </article>
+                </div>
+
+                <div className="auth-switch">
+                  {authRoles.map((roleOption) => (
+                    <button
+                      key={roleOption.id}
+                      type="button"
+                      className={`menu-link ${authRole === roleOption.id ? "is-active" : ""}`}
+                      onClick={() => handleRoleChange(roleOption.id)}
+                    >
+                      {roleOption.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="auth-switch">
+                  <button
+                    type="button"
+                    className={`menu-link ${authMode === "login" ? "is-active" : ""}`}
+                    onClick={() => resetAuthForm("login")}
+                  >
+                    Log in
+                  </button>
+                  {authRole === "user" && (
+                    <button
+                      type="button"
+                      className={`menu-link ${authMode === "register" ? "is-active" : ""}`}
+                      onClick={() => resetAuthForm("register")}
+                    >
+                      Sign up
+                    </button>
+                  )}
+                  {authMode === "forgot-password" && (
+                    <button type="button" className="menu-link is-active">
+                      Forgot Password
+                    </button>
+                  )}
+                  {authMode === "reset-password" && (
+                    <button type="button" className="menu-link is-active">
+                      Reset Password
+                    </button>
+                  )}
+                </div>
+
+                {authRole === "admin" && (
+                  <div className="credential-note">
+                    <strong>Admin credentials</strong>
+                    <span>Email: singh01@gmail.com</span>
+                    <span>Password: anshu1234</span>
+                  </div>
+                )}
+
+                <div className="form-grid">
+                  {authMode === "forgot-password" ? (
+                    <label className="full-width">
+                      <span>Email</span>
+                      <input
+                        type="email"
+                        name="email"
+                        value={authFormState.email}
+                        onChange={handleAuthInputChange}
+                        placeholder="Enter your registered email"
+                        required
+                      />
+                    </label>
+                  ) : authMode === "reset-password" ? (
+                    <>
+                      <label className="full-width">
+                        <span>Email</span>
+                        <input
+                          type="email"
+                          name="email"
+                          value={authFormState.email}
+                          onChange={handleAuthInputChange}
+                          required
+                          disabled
+                        />
+                      </label>
+                      <label>
+                        <span>OTP</span>
+                        <input
+                          type="text"
+                          value={otp}
+                          onChange={(e) => setOtp(e.target.value)}
+                          placeholder="6-digit OTP"
+                          maxLength="6"
+                          required
+                        />
+                      </label>
+                      <label>
+                        <span>New Password</span>
+                        <input
+                          type="password"
+                          value={newPassword}
+                          onChange={(e) => setNewPassword(e.target.value)}
+                          placeholder="Minimum 6 characters"
+                          required
+                        />
+                      </label>
+                    </>
+                  ) : (
+                    <>
+                      {authMode === "register" && (
+                        <>
+                          <label>
+                            <span>{authRole === "delivery" ? "Delivery username" : "Username"}</span>
+                            <input
+                              type="text"
+                              name="username"
+                              value={authFormState.username}
+                              onChange={handleAuthInputChange}
+                              placeholder="Your name"
+                              required
+                            />
+                          </label>
+                          <label>
+                            <span>Phone number</span>
+                            <input
+                              type="tel"
+                              name="phoneNumber"
+                              value={authFormState.phoneNumber}
+                              onChange={handleAuthInputChange}
+                              maxLength="10"
+                              placeholder="9876543210"
+                              required
+                            />
+                          </label>
+                        </>
+                      )}
+                      <label>
+                        <span>Email</span>
+                        <input
+                          type="email"
+                          name="email"
+                          value={authFormState.email}
+                          onChange={handleAuthInputChange}
+                          required
+                        />
+                      </label>
+                      <label>
+                        <span>Password</span>
+                        <input
+                          type="password"
+                          name="password"
+                          value={authFormState.password}
+                          onChange={handleAuthInputChange}
+                          placeholder="Minimum 6 characters"
+                          required
+                        />
+                      </label>
+                      {authMode === "register" && authRole === "delivery" && (
+                        <>
+                          <label>
+                            <span>Building no.</span>
+                            <input type="text" name="buildingNo" value={authFormState.buildingNo} onChange={handleAuthInputChange} placeholder="123/A" required />
+                          </label>
+                          <label>
+                            <span>Landmark</span>
+                            <input type="text" name="landmark" value={authFormState.landmark} onChange={handleAuthInputChange} placeholder="Near market" />
+                          </label>
+                          <label>
+                            <span>Street</span>
+                            <input type="text" name="street" value={authFormState.street} onChange={handleAuthInputChange} placeholder="MG Road" required />
+                          </label>
+                          <label>
+                            <span>Village</span>
+                            <input type="text" name="village" value={authFormState.village} onChange={handleAuthInputChange} placeholder="Village name" />
+                          </label>
+                          <label>
+                            <span>City</span>
+                            <input type="text" name="city" value={authFormState.city} onChange={handleAuthInputChange} placeholder="City" required />
+                          </label>
+                          <label>
+                            <span>District</span>
+                            <input type="text" name="district" value={authFormState.district} onChange={handleAuthInputChange} placeholder="District" />
+                          </label>
+                          <label>
+                            <span>State</span>
+                            <input type="text" name="state" value={authFormState.state} onChange={handleAuthInputChange} placeholder="State" required />
+                          </label>
+                        </>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                <div className="form-actions">
+                  {authMode === "forgot-password" ? (
+                    <button type="button" className="primary-button" onClick={handleForgotPasswordSubmit} disabled={submitting}>
+                      {submitting ? "Sending OTP..." : "Send OTP"}
+                    </button>
+                  ) : authMode === "reset-password" ? (
+                    <button type="button" className="primary-button" onClick={handleResetPasswordSubmit} disabled={submitting}>
+                      {submitting ? "Resetting..." : "Reset Password"}
+                    </button>
+                  ) : (
+                    <button type="submit" className="primary-button" disabled={submitting}>
+                      {submitting ? (authMode === "register" ? "Creating..." : "Logging in...") : authMode === "register" ? "Create account" : "Log in"}
+                    </button>
+                  )}
+                </div>
+
+                {authMode === "login" && (
+                  <div style={{ marginTop: "16px", textAlign: "center" }}>
+                    <button
+                      type="button"
+                      className="menu-link"
+                      style={{ fontSize: "0.9rem", color: "var(--primary)" }}
+                      onClick={() => setAuthMode("forgot-password")}
+                    >
+                      Forgot password?
+                    </button>
+                  </div>
+                )}
+                {authMode === "forgot-password" && (
+                  <div style={{ marginTop: "16px", textAlign: "center" }}>
+                    <button
+                      type="button"
+                      className="menu-link"
+                      style={{ fontSize: "0.9rem" }}
+                      onClick={() => setAuthMode("login")}
+                    >
+                      Back to login
+                    </button>
+                  </div>
+                )}
+              </form>
+            )}
+          </section>
+        )}
+
+        {activeSection === "browse" && (
+          <>
+            {(currentUser?.role === "guest" || currentUser?.role === "user") && (
+              <>
+                <section className="hero-card">
+                  <div className="hero-copy">
+                    {/* <p className="eyebrow">Flipkart-inspired rental marketplace</p> */}
+                    <h2> Hey! Let's Start Rent Something</h2>
+                    {/* <p>Use the top menu to add new items, track your listings, and review placed rental orders.</p> */}
+                  </div>
+                  <div className="hero-stat-grid">
+                    <button type="button" className="stat-card" onClick={() => setActiveSection("browse")}>
+                      <strong>{catalogItems.length}</strong>
+                      <span>Visible items</span>
+                    </button>
+                    <button type="button" className="stat-card" onClick={() => setActiveSection("your-orders")}>
+                      <strong>{orders.length}</strong>
+                      <span>Your orders</span>
+                    </button>
+                    <button type="button" className="stat-card" onClick={() => setActiveSection("your-items")}>
+                      <strong>{allItems.length}</strong>
+                      <span>Your listed items</span>
+                    </button>
+                  </div>
+                </section>
+
+                {selectedViewItemId ? (
+                  <section className="item-detail-view">
+                    <button className="secondary-button back-button" onClick={() => setSelectedViewItemId("")}>
+                      ← Back to marketplace
+                    </button>
+                    {(() => {
+                      const item = catalogItems.find(i => i._id === selectedViewItemId);
+                      if (!item) return <div className="empty-state">Item not found.</div>;
+                      return (
+                        <div className="detail-layout">
+                          <div className="detail-media">
+                            <img src={item.media.mainImage} alt={item.brandName} className="main-detail-img" />
+                            <div className="side-media">
+                              {item.media.additionalImage && <img src={item.media.additionalImage} alt="Additional" />}
+                              {item.media.video && <video src={item.media.video} controls />}
+                            </div>
+                          </div>
+                          <div className="detail-info">
+                            <div className="meta-row">
+                              <span className="tag">{item.category}</span>
+                              <span className="price">Rs {item.rentCost}/day</span>
+                            </div>
+                            <h2>{item.brandName}</h2>
+                            <p className="description">{item.productDescription}</p>
+                            <div className="detail-specs">
+                              <div><strong>Location:</strong> {item.address}</div>
+                              <div><strong>Pin Code:</strong> {item.pinCode}</div>
+                              <div><strong>Owner Contact:</strong> {item.phoneNumber}</div>
+                            </div>
+                            <button
+                              className="primary-button rent-now-cta"
+                              onClick={() => {
+                                setSelectedViewItemId("");
+                                beginRent(item._id);
+                              }}
+                              disabled={item.isAvailable === false || orderedItemIds.has(item._id)}
+                            >
+                              {orderedItemIds.has(item._id) ? "Already ordered" : item.isAvailable === false ? "Currently Rented" : "Rent now"}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </section>
+                ) : (
+                  <>
+                    <div className="section-heading">
+                      <div>
+                        <p className="eyebrow">Available products</p>
+                        <h3>Browse rental items</h3>
+                      </div>
+                      <p className="section-note">Filter using the category dropdown in the top bar.</p>
+                    </div>
+
+                    {selectedRentItem && (
+                      <form className="rent-panel" onSubmit={handleRentSubmit}>
+                        <div className="section-heading">
+                          <div>
+                            <p className="eyebrow">Renter verification</p>
+                            <h3>Rent {selectedRentItem.brandName}</h3>
+                          </div>
+                          <button type="button" className="secondary-button" onClick={() => setSelectedRentItemId("")}>
+                            Cancel
+                          </button>
+                        </div>
+
+                        <div className="rent-summary">
+                          <span className="tag">{selectedRentItem.category}</span>
+                          <span className="price">Rs {selectedRentItem.rentCost}/day</span>
+                        </div>
+
+                        <div className="form-grid">
+                          <label>
+                            <span>PAN number</span>
+                            <input type="text" name="panNumber" value={rentFormState.panNumber} onChange={handleRentInputChange} placeholder="ABCDE1234F" maxLength="10" required />
+                          </label>
+                          <label>
+                            <span>Aadhaar number</span>
+                            <input type="text" name="aadhaarNumber" value={rentFormState.aadhaarNumber} onChange={handleRentInputChange} inputMode="numeric" maxLength="12" placeholder="123412341234" required />
+                          </label>
+                          <label>
+                            <span>Phone number</span>
+                            <input type="tel" name="phoneNumber" value={rentFormState.phoneNumber} onChange={handleRentInputChange} inputMode="tel" maxLength="10" placeholder="9876543210" required />
+                          </label>
+                          <label>
+                            <span>Pin code</span>
+                            <input type="text" name="pinCode" value={rentFormState.pinCode} onChange={handleRentInputChange} inputMode="numeric" maxLength="6" placeholder="110001" required />
+                          </label>
+                          <label>
+                            <span>Building no.</span>
+                            <input type="text" name="buildingNo" value={rentFormState.buildingNo} onChange={handleRentInputChange} placeholder="123/A" required />
+                          </label>
+                          <label>
+                            <span>Landmark</span>
+                            <input type="text" name="landmark" value={rentFormState.landmark} onChange={handleRentInputChange} placeholder="Near market" />
+                          </label>
+                          <label>
+                            <span>Street</span>
+                            <input type="text" name="street" value={rentFormState.street} onChange={handleRentInputChange} placeholder="MG Road" required />
+                          </label>
+                          <label>
+                            <span>Village</span>
+                            <input type="text" name="village" value={rentFormState.village} onChange={handleRentInputChange} placeholder="Village name" />
+                          </label>
+                          <label>
+                            <span>City</span>
+                            <input type="text" name="city" value={rentFormState.city} onChange={handleRentInputChange} placeholder="City" required />
+                          </label>
+                          <label>
+                            <span>District</span>
+                            <input type="text" name="district" value={rentFormState.district} onChange={handleRentInputChange} placeholder="District" />
+                          </label>
+                          <label>
+                            <span>State</span>
+                            <input type="text" name="state" value={rentFormState.state} onChange={handleRentInputChange} placeholder="State" required />
+                          </label>
+                          <label>
+                            <span>No. of days for rent</span>
+                            <input type="number" name="rentalDays" value={rentFormState.rentalDays} onChange={handleRentInputChange} min="1" placeholder="3" required />
+                          </label>
+                        </div>
+
+                        <div className="form-actions">
+                          <button type="submit" className="primary-button" disabled={submitting}>
+                            {submitting ? "Placing order..." : "Confirm rent"}
+                          </button>
+                          {message && <p className="form-message">{message}</p>}
+                        </div>
+                      </form>
+                    )}
+
+                    {loading ? (
+                      <div className="empty-state">Loading products...</div>
+                    ) : catalogItems.length ? (
+                      <div className="catalog-grid">
+                        {catalogItems.map((item) => (
+                          <article key={item._id} className="product-card" onClick={() => setSelectedViewItemId(item._id)} style={{ cursor: "pointer" }}>
+                            <img src={item.media.mainImage} alt={item.brandName} />
+                            <div className="card-body">
+                              <div className="meta-row">
+                                <span className="tag">{item.category}</span>
+                                <span className="price">Rs {item.rentCost}/day</span>
+                              </div>
+                              <h4>{item.brandName}</h4>
+                              <p className="description">{item.productDescription}</p>
+                              <div className="card-actions">
+                                <button
+                                  className="primary-button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    beginRent(item._id);
+                                  }}
+                                  disabled={item.isAvailable === false || orderedItemIds.has(item._id)}
+                                >
+                                  {orderedItemIds.has(item._id) ? "Already ordered" : item.isAvailable === false ? "Currently Rented" : "Rent now"}
+                                </button>
+                              </div>
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="empty-state">No items found for this category.</div>
+                    )}
+                  </>
+                )}
+              </>
+            )}
+
+            {currentUser?.role === "delivery" && (
+              <>
+                <section className="hero-card delivery-hero">
+                  <div className="hero-copy">
+                    <p className="eyebrow">Delivery operations</p>
+                    <h2>Focus on active routes, claimed handoffs, and completed drop-offs.</h2>
+                    <p>This dashboard is only for delivery partners. Open the route queue to claim jobs and update delivery status.</p>
+                  </div>
+                  <div className="hero-stat-grid">
+                    <article>
+                      <strong>{incompleteDeliveryOrders.length}</strong>
+                      <span>Incomplete deliveries</span>
+                    </article>
+                    <article>
+                      <strong>{completedDeliveryOrders.length}</strong>
+                      <span>Completed deliveries</span>
+                    </article>
+                    <article>
+                      <strong>{deliveryOrders.filter((order) => !order.deliveryPartner).length}</strong>
+                      <span>Open route jobs</span>
+                    </article>
+                  </div>
+                </section>
+
+                <section className="role-dashboard-grid">
+                  <article className="role-focus-card">
+                    <p className="eyebrow">Primary action</p>
+                    <h3>Open route queue</h3>
+                    <p>Go to `/pickup_delivery` to claim new jobs and manage your assigned deliveries.</p>
+                    <button type="button" className="primary-button" onClick={() => setActiveSection("pickup-delivery")}>
+                      Go to /pickup_delivery
+                    </button>
+                  </article>
+                  <article className="role-focus-card">
+                    <p className="eyebrow">Marketplace status</p>
+                    <h3>Claim from desk</h3>
+                    <p>You can now claim available pickup jobs directly from the product list below.</p>
+                  </article>
+                </section>
+
+                <section className="panel" style={{ marginTop: "32px" }}>
+                  <div className="section-heading">
+                    <div>
+                      <p className="eyebrow">Available for pickup</p>
+                      <h3>Delivery Desk</h3>
+                    </div>
+                    <p className="section-note">Showing up to 10 latest marketplace items. Click + to claim unassigned jobs.</p>
+                  </div>
+
+                  {loading ? (
+                    <div className="empty-state">Loading marketplace jobs...</div>
+                  ) : deliveryOrders.filter(o => !o.deliveryPartner).length ? (
+                    <div className="catalog-grid">
+                      {deliveryOrders
+                        .filter(o => !o.deliveryPartner)
+                        .sort((a, b) => {
+                          const scoreA = calculateProximityScore(currentUser?.address, a.item?.address);
+                          const scoreB = calculateProximityScore(currentUser?.address, b.item?.address);
+                          return scoreB - scoreA;
+                        })
+                        .slice(0, 10)
+                        .map((order) => {
+                        const item = order.item;
+                        if (!item) return null;
+
+                        return (
+                          <article key={item._id} className="product-card">
+                            <img src={item.media.mainImage} alt={item.brandName} />
+                            <div className="card-body">
+                              <div className="meta-row">
+                                <span className="tag">{item.category}</span>
+                                {calculateProximityScore(currentUser?.address, item.address) >= 1000 ? (
+                                  <span className="tag" style={{ background: "var(--accent)", color: "var(--text)" }}>Near You</span>
+                                ) : (
+                                  <span className="price">Unassigned Job</span>
+                                )}
+                              </div>
+                              <h4>{item.brandName}</h4>
+                              <p className="description">{item.productDescription}</p>
+                              <div className="card-actions">
+                                <button
+                                  className="pickup-add-button"
+                                  onClick={() => handleClaimItemDelivery(item._id)}
+                                  disabled={submitting}
+                                  title="Claim job"
+                                >
+                                  +
+                                </button>
+                                <span style={{ fontSize: "0.85rem", color: "var(--muted)" }}>
+                                  Job available
+                                </span>
+                              </div>
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="empty-state">No unassigned rental jobs available right now.</div>
+                  )}
+                </section>
+
+                <section className="panel" style={{ marginTop: "32px" }}>
+                  <div className="section-heading">
+                    <div>
+                      <p className="eyebrow">Location settings</p>
+                      <h3>Update your location</h3>
+                    </div>
+                  </div>
+                  <form className="item-form" onSubmit={handleUpdateLocation}>
+                    <p className="section-note" style={{ marginBottom: "16px" }}>Current: {currentUser.address}</p>
+                    <div className="form-grid">
+                      <label>
+                        <span>Building no.</span>
+                        <input type="text" name="buildingNo" value={authFormState.buildingNo} onChange={handleAuthInputChange} placeholder="123/A" required />
+                      </label>
+                      <label>
+                        <span>Landmark</span>
+                        <input type="text" name="landmark" value={authFormState.landmark} onChange={handleAuthInputChange} placeholder="Near market" />
+                      </label>
+                      <label>
+                        <span>Street</span>
+                        <input type="text" name="street" value={authFormState.street} onChange={handleAuthInputChange} placeholder="MG Road" required />
+                      </label>
+                      <label>
+                        <span>Village</span>
+                        <input type="text" name="village" value={authFormState.village} onChange={handleAuthInputChange} placeholder="Village name" />
+                      </label>
+                      <label>
+                        <span>City</span>
+                        <input type="text" name="city" value={authFormState.city} onChange={handleAuthInputChange} placeholder="City" required />
+                      </label>
+                      <label>
+                        <span>District</span>
+                        <input type="text" name="district" value={authFormState.district} onChange={handleAuthInputChange} placeholder="District" />
+                      </label>
+                      <label>
+                        <span>State</span>
+                        <input type="text" name="state" value={authFormState.state} onChange={handleAuthInputChange} placeholder="State" required />
+                      </label>
+                    </div>
+                    <div className="form-actions">
+                      <button type="submit" className="primary-button" disabled={submitting}>
+                        {submitting ? "Updating..." : "Update location detail"}
+                      </button>
+                    </div>
+                  </form>
+                </section>
+              </>
+            )}
+
+            {currentUser?.role === "admin" && (
+              <>
+                <section className="hero-card admin-hero">
+                  <div className="hero-copy">
+                    <p className="eyebrow">Control room</p>
+                    <h2>Track pickup demand, unclaimed jobs, and delivery completion from one operations board.</h2>
+                    <p>This admin view is separated from the renter marketplace and focused on logistics oversight.</p>
+                  </div>
+                  <div className="hero-stat-grid">
+                    <article>
+                      <strong>{openAdminOrders}</strong>
+                      <span>Open jobs</span>
+                    </article>
+                    <article>
+                      <strong>{assignedAdminOrders}</strong>
+                      <span>Assigned jobs</span>
+                    </article>
+                    <article>
+                      <strong>{completedDeliveryOrders.length}</strong>
+                      <span>Delivered jobs</span>
+                    </article>
+                  </div>
+                </section>
+
+                <section className="role-dashboard-grid">
+                  <article className="role-focus-card">
+                    <p className="eyebrow">Operations board</p>
+                    <h3>Review logistics queue</h3>
+                    <p>Use the logistics board to inspect open, assigned, and delivered rental orders.</p>
+                    <button type="button" className="primary-button" onClick={() => setActiveSection("pickup-delivery")}>
+                      Open logistics board
+                    </button>
+                  </article>
+                  <article className="role-focus-card">
+                    <p className="eyebrow">Admin scope</p>
+                    <h3>Oversight only</h3>
+                    <p>Admin is intentionally separated from renting and delivery claiming so the interface stays operational.</p>
+                  </article>
+                </section>
+
+                <section className="panel" style={{ marginTop: "32px" }}>
+                  <div className="section-heading">
+                    <div>
+                      <p className="eyebrow">User management</p>
+                      <h3>Create delivery partner account</h3>
+                    </div>
+                  </div>
+                  <form className="item-form" onSubmit={handleAdminCreateDelivery}>
+                    {adminMessage && <div className="status-banner" style={{ marginBottom: "20px" }}>{adminMessage}</div>}
+                    <div className="form-grid">
+                      <label>
+                        <span>Delivery username</span>
+                        <input type="text" name="username" value={adminDeliveryForm.username} onChange={handleAdminInputChange} placeholder="Partner name" required />
+                      </label>
+                      <label>
+                        <span>Email</span>
+                        <input type="email" name="email" value={adminDeliveryForm.email} onChange={handleAdminInputChange} required />
+                      </label>
+                      <label>
+                        <span>Phone number</span>
+                        <input type="tel" name="phoneNumber" value={adminDeliveryForm.phoneNumber} onChange={handleAdminInputChange} maxLength="10" placeholder="9876543210" required />
+                      </label>
+                      <label>
+                        <span>Password</span>
+                        <input type="password" name="password" value={adminDeliveryForm.password} onChange={handleAdminInputChange} placeholder="Min 6 chars" required />
+                      </label>
+                      <label>
+                        <span>Building no.</span>
+                        <input type="text" name="buildingNo" value={adminDeliveryForm.buildingNo} onChange={handleAdminInputChange} placeholder="123/A" required />
+                      </label>
+                      <label>
+                        <span>Landmark</span>
+                        <input type="text" name="landmark" value={adminDeliveryForm.landmark} onChange={handleAdminInputChange} placeholder="Near market" />
+                      </label>
+                      <label>
+                        <span>Street</span>
+                        <input type="text" name="street" value={adminDeliveryForm.street} onChange={handleAdminInputChange} placeholder="MG Road" required />
+                      </label>
+                      <label>
+                        <span>Village</span>
+                        <input type="text" name="village" value={adminDeliveryForm.village} onChange={handleAdminInputChange} placeholder="Village name" />
+                      </label>
+                      <label>
+                        <span>City</span>
+                        <input type="text" name="city" value={adminDeliveryForm.city} onChange={handleAdminInputChange} placeholder="City" required />
+                      </label>
+                      <label>
+                        <span>District</span>
+                        <input type="text" name="district" value={adminDeliveryForm.district} onChange={handleAdminInputChange} placeholder="District" />
+                      </label>
+                      <label>
+                        <span>State</span>
+                        <input type="text" name="state" value={adminDeliveryForm.state} onChange={handleAdminInputChange} placeholder="State" required />
+                      </label>
+                    </div>
+                    <div className="form-actions">
+                      <button type="submit" className="primary-button" disabled={submitting}>
+                        {submitting ? "Creating..." : "Create delivery partner"}
+                      </button>
+                    </div>
+                  </form>
+                </section>
+              </>
+            )}
+          </>
+        )}
+
+        {activeSection === "add-item" && (
+          <section className="panel">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">{editingItemId ? "Update your product" : "List a product"}</p>
+                <h3>{editingItemId ? "Edit item" : "Add item"}</h3>
+              </div>
+            </div>
+
+            <form className="item-form" onSubmit={handleSubmit}>
+              <div className="form-grid">
+                <label>
+                  <span>Main image</span>
+                  <input type="file" name="mainImage" accept="image/*" onChange={handleFileChange} required={!editingItemId} />
+                </label>
+                <label>
+                  <span>Additional image</span>
+                  <input type="file" name="additionalImage" accept="image/*" onChange={handleFileChange} />
+                </label>
+                <label>
+                  <span>Video</span>
+                  <input type="file" name="video" accept="video/*" onChange={handleFileChange} />
+                </label>
+                <label>
+                  <span>Category</span>
+                  <select name="category" value={formState.category} onChange={handleInputChange} required>
+                    <option value="">Choose category</option>
+                    {categories.map((category) => (
+                      <option key={category} value={category}>
+                        {category}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>Rent cost per day</span>
+                  <input type="number" min="1" name="rentCost" value={formState.rentCost} onChange={handleInputChange} placeholder="2500" required />
+                </label>
+                <label>
+                  <span>Product brand name</span>
+                  <input type="text" name="brandName" value={formState.brandName} onChange={handleInputChange} placeholder="Samsung, Honda, IKEA..." required />
+                </label>
+                <label className="full-width">
+                  <span>Product description</span>
+                  <textarea rows="4" name="productDescription" value={formState.productDescription} onChange={handleInputChange} placeholder="Describe condition, model, size, and rental terms." required />
+                </label>
+                <label>
+                  <span>Building no.</span>
+                  <input type="text" name="buildingNo" value={formState.buildingNo} onChange={handleInputChange} placeholder="123/A" required />
+                </label>
+                <label>
+                  <span>Landmark</span>
+                  <input type="text" name="landmark" value={formState.landmark} onChange={handleInputChange} placeholder="Near market" />
+                </label>
+                <label>
+                  <span>Street</span>
+                  <input type="text" name="street" value={formState.street} onChange={handleInputChange} placeholder="MG Road" required />
+                </label>
+                <label>
+                  <span>Village</span>
+                  <input type="text" name="village" value={formState.village} onChange={handleInputChange} placeholder="Village name" />
+                </label>
+                <label>
+                  <span>City</span>
+                  <input type="text" name="city" value={formState.city} onChange={handleInputChange} placeholder="City" required />
+                </label>
+                <label>
+                  <span>District</span>
+                  <input type="text" name="district" value={formState.district} onChange={handleInputChange} placeholder="District" />
+                </label>
+                <label>
+                  <span>State</span>
+                  <input type="text" name="state" value={formState.state} onChange={handleInputChange} placeholder="State" required />
+                </label>
+                <label>
+                  <span>Pin code</span>
+                  <input type="text" inputMode="numeric" maxLength="6" name="pinCode" value={formState.pinCode} onChange={handleInputChange} placeholder="110001" required />
+                </label>
+                <label>
+                  <span>Phone number</span>
+                  <input type="tel" inputMode="tel" maxLength="10" name="phoneNumber" value={formState.phoneNumber} onChange={handleInputChange} placeholder="9876543210" required />
+                </label>
+              </div>
+
+              <div className="media-preview-grid">
+                <div className="preview-box">
+                  <p>Main image preview</p>
+                  {previews.mainImage ? <img src={previews.mainImage} alt="Main preview" /> : <div className="preview-fallback">No file selected</div>}
+                </div>
+                <div className="preview-box">
+                  <p>Additional image preview</p>
+                  {previews.additionalImage ? <img src={previews.additionalImage} alt="Additional preview" /> : <div className="preview-fallback">No file selected</div>}
+                </div>
+                <div className="preview-box">
+                  <p>Video preview</p>
+                  {previews.video ? <video src={previews.video} controls /> : <div className="preview-fallback">No file selected</div>}
+                </div>
+              </div>
+
+              <div className="form-actions">
+                <button type="submit" className="primary-button" disabled={submitting}>
+                  {submitting ? (editingItemId ? "Updating..." : "Publishing...") : editingItemId ? "Update item" : "Publish item"}
+                </button>
+                {editingItemId && (
+                  <button type="button" className="secondary-button" onClick={resetItemForm}>
+                    Cancel edit
+                  </button>
+                )}
+                {message && <p className="form-message">{message}</p>}
+              </div>
+            </form>
+          </section>
+        )}
+
+        {activeSection === "your-items" && (
+          <section className="panel">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Seller dashboard</p>
+                <h3>Your item</h3>
+              </div>
+            </div>
+
+            {allItems.length ? (
+              <div className="card-grid">
+                {allItems.map((item) => (
+                  <article key={item._id} className="info-card">
+                    <img src={item.media.mainImage} alt={item.brandName} />
+                    <div className="card-body">
+                      <div className="meta-row">
+                        <span className="tag">{item.category}</span>
+                        <span className="price">Rs {item.rentCost}/day</span>
+                      </div>
+                      <h4>{item.brandName}</h4>
+                      <div className="detail-list">
+                        <span>{item.productDescription}</span>
+                        <span>{item.address} - {item.pinCode}</span>
+                        <span>Phone: {item.phoneNumber}</span>
+                      </div>
+                      {orders.find(o => o.item._id === item._id) && (
+                        <div className="delivery-stages-mini">
+                          {(() => {
+                            const order = orders.find(o => o.item._id === item._id);
+                            return (
+                              <>
+                                <span className={`stage-dot ${order.pickedUpFromSellerAt ? "is-done" : ""}`} title="Picked up from seller">1</span>
+                                <span className={`stage-dot ${order.deliveredToRenterAt ? "is-done" : ""}`} title="Delivered to renter">2</span>
+                                <span className={`stage-dot ${order.pickedUpFromRenterAt ? "is-done" : ""}`} title="Picked up from renter">3</span>
+                                <span className={`stage-dot ${order.returnedToSellerAt ? "is-done" : ""}`} title="Returned to owner">4</span>
+                              </>
+                            );
+                          })()}
+                        </div>
+                      )}
+                      <div className="card-actions">
+                        <button type="button" className="secondary-button" onClick={() => beginEditItem(item)}>
+                          Edit item
+                        </button>
+                        <button type="button" className="primary-button" onClick={() => handleDeleteItem(item._id)} disabled={submitting}>
+                          Delete item
+                        </button>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <div className="empty-state">No items listed yet.</div>
+            )}
+          </section>
+        )}
+
+        {activeSection === "your-orders" && (() => {
+          const youRentOrders = orders.filter((o) => o.renterUser?._id === currentUser?._id);
+          const yourRentOrders = orders.filter((o) => o.renterUser?._id !== currentUser?._id);
+          const activeOrders = orderView === "you-rent" ? youRentOrders : yourRentOrders;
+
+          return (
+            <section className="panel">
+              <div className="section-heading">
+                <div>
+                  <p className="eyebrow">Order history</p>
+                  <h3>Your order</h3>
+                </div>
+              </div>
+
+              {/* Toggle */}
+              <div className="order-view-toggle">
+                <button
+                  type="button"
+                  className={`order-toggle-btn ${orderView === "you-rent" ? "is-active" : ""}`}
+                  onClick={() => setOrderView("you-rent")}
+                >
+                  <span className="toggle-icon">🛒</span>
+                  <span className="toggle-label">You Rent</span>
+                  <span className="toggle-count">{youRentOrders.length}</span>
+                </button>
+                <button
+                  type="button"
+                  className={`order-toggle-btn ${orderView === "your-rent" ? "is-active" : ""}`}
+                  onClick={() => setOrderView("your-rent")}
+                >
+                  <span className="toggle-icon">📦</span>
+                  <span className="toggle-label">Your Rent</span>
+                  <span className="toggle-count">{yourRentOrders.length}</span>
+                </button>
+              </div>
+
+              <p className="section-note order-view-desc">
+                {orderView === "you-rent"
+                  ? "Products you have rented from other users."
+                  : "Your products that someone else has currently rented."}
+              </p>
+
+              {activeOrders.length ? (
+                <div className="card-grid">
+                  {activeOrders.map((order) => (
+                    <article key={order._id} className="info-card">
+                      <img src={order.item.media.mainImage} alt={order.item.brandName} />
+                      <div className="card-body">
+                        <div className="meta-row">
+                          <span className="tag">{order.item.category}</span>
+                          <span className="price">{order.status}</span>
+                        </div>
+                        <h4>{order.item.brandName}</h4>
+                        <div className="detail-list">
+                          <span>Rent cost: Rs {order.item.rentCost}/day</span>
+                          {orderView === "you-rent" ? (
+                            <>
+                              <span>Owner: {order.item.ownerUser?.username || "Unknown"}</span>
+                              <span>Pickup: {order.item.address}</span>
+                              <span>Delivery to: {order.renter?.address || "Not available"}</span>
+                              <span>Rental days: {order.renter?.rentalDays || "Not available"}</span>
+                            </>
+                          ) : (
+                            <>
+                              <span>Rented by: {order.renterUser?.username || "Unknown"}</span>
+                              <span>Their address: {order.renter?.address || "Not available"}</span>
+                              <span>Rental days: {order.renter?.rentalDays || "Not available"}</span>
+                            </>
+                          )}
+                          <span>Delivery partner: {order.deliveryPartner?.username || "Waiting for partner"}</span>
+                        </div>
+                        <div className="delivery-stages-mini">
+                          <span className={`stage-dot ${order.pickedUpFromSellerAt ? "is-done" : ""}`} title="Picked up from seller">1</span>
+                          <span className={`stage-dot ${order.deliveredToRenterAt ? "is-done" : ""}`} title="Delivered to renter">2</span>
+                          <span className={`stage-dot ${order.pickedUpFromRenterAt ? "is-done" : ""}`} title="Picked up from renter">3</span>
+                          <span className={`stage-dot ${order.returnedToSellerAt ? "is-done" : ""}`} title="Returned to owner">4</span>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <div className="empty-state">
+                  {orderView === "you-rent"
+                    ? "You haven't rented any items yet."
+                    : "No one has rented your items yet."}
+                </div>
+              )}
+            </section>
+          );
+        })()}
+
+        {activeSection === "pickup-delivery" && (
+          <section className="panel">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Pickup and delivery</p>
+                <h3>/pickup_delivery</h3>
+              </div>
+              <p className="section-note">
+                {currentUser?.role === "delivery"
+                  ? "See incomplete and completed deliveries here, and claim open pickup tasks."
+                  : "Admin can review all open pickup and delivery requests."}
+              </p>
+            </div>
+
+            {currentUser?.role === "delivery" && (
+              <>
+                <div className="hero-stat-grid delivery-stat-grid">
+                  <article>
+                    <strong>{incompleteDeliveryOrders.length}</strong>
+                    <span>Delivery incomplete</span>
+                  </article>
+                  <article>
+                    <strong>{completedDeliveryOrders.length}</strong>
+                    <span>Delivery completed</span>
+                  </article>
+                  <article>
+                    <strong>/pickup_delivery</strong>
+                    <span>Your delivery route page</span>
+                  </article>
+                </div>
+
+                <div className="auth-switch">
+                  <button
+                    type="button"
+                    className={`menu-link ${deliveryView === "incomplete" ? "is-active" : ""}`}
+                    onClick={() => setDeliveryView("incomplete")}
+                  >
+                    Delivery Incomplete
+                  </button>
+                  <button
+                    type="button"
+                    className={`menu-link ${deliveryView === "completed" ? "is-active" : ""}`}
+                    onClick={() => setDeliveryView("completed")}
+                  >
+                    Delivery Completed
+                  </button>
+                </div>
+              </>
+            )}
+
+            {loading ? (
+              <div className="empty-state">Loading pickup and delivery orders...</div>
+            ) : pickupDeliveryList.length ? (
+              <div className="card-grid">
+                {pickupDeliveryList.map((order) => {
+                  const isAssignedToCurrentUser = order.deliveryPartner?._id === currentUser?._id;
+                  const isAvailable = !order.deliveryPartner;
+                  const isCompleted = order.status === "Delivered";
+                  const seller = order.item.ownerUser;
+
+                  return (
+                    <article key={order._id} className="info-card">
+                      <img src={order.item.media.mainImage} alt={order.item.brandName} />
+                      <div className="card-body">
+                        <div className="meta-row">
+                          <span className="tag">{order.item.category}</span>
+                          <span className="price">{order.status}</span>
+                        </div>
+                        <h4>{order.item.brandName}</h4>
+                        <div className="detail-list">
+                          <div style={{ marginBottom: "12px", borderBottom: "1px solid #ddd", paddingBottom: "8px" }}>
+                            <strong style={{ display: "block", marginBottom: "4px" }}>📍 Seller (Pickup):</strong>
+                            <span>{seller?.username || "Not available"}</span><br />
+                            <span>{order.item.address}</span><br />
+                            <span>Pincode: {order.item.pinCode}</span><br />
+                            <span>📞 {order.item.phoneNumber}</span>
+                          </div>
+                          <div style={{ marginBottom: "12px" }}>
+                            <strong style={{ display: "block", marginBottom: "4px" }}>📍 Renter (Delivery):</strong>
+                            <span>{order.renterUser?.username || "Not available"}</span><br />
+                            <span>{order.renter?.address || "Not available"}</span><br />
+                            <span>Pincode: {order.renter?.pinCode || "NA"}</span><br />
+                            <span>📞 {order.renter?.phoneNumber || "Not available"}</span>
+                          </div>
+                          <span>Rental days: {order.renter?.rentalDays || "Not available"}</span>
+                          <span>Delivery partner: {order.deliveryPartner?.username || "Not assigned yet"}</span>
+                        </div>
+                        <div className="delivery-checklist">
+                          <label className={`check-item ${order.pickedUpFromSellerAt ? "is-done" : ""}`}>
+                            <input
+                              type="checkbox"
+                              checked={!!order.pickedUpFromSellerAt}
+                              disabled={!isAssignedToCurrentUser || !!order.pickedUpFromSellerAt || submitting}
+                              onChange={() => handleUpdateOrderStatus(order._id, "PickedUpFromSeller")}
+                            />
+                            <span>1. Pickup from Seller</span>
+                          </label>
+                          <label className={`check-item ${order.deliveredToRenterAt ? "is-done" : ""}`}>
+                            <input
+                              type="checkbox"
+                              checked={!!order.deliveredToRenterAt}
+                              disabled={!isAssignedToCurrentUser || !order.pickedUpFromSellerAt || !!order.deliveredToRenterAt || submitting}
+                              onChange={() => handleUpdateOrderStatus(order._id, "DeliveredToRenter")}
+                            />
+                            <span>2. Delivery to Renter</span>
+                          </label>
+                          <label className={`check-item ${order.pickedUpFromRenterAt ? "is-done" : ""}`}>
+                            <input
+                              type="checkbox"
+                              checked={!!order.pickedUpFromRenterAt}
+                              disabled={!isAssignedToCurrentUser || !order.deliveredToRenterAt || !!order.pickedUpFromRenterAt || submitting}
+                              onChange={() => handleUpdateOrderStatus(order._id, "PickedUpFromRenter")}
+                            />
+                            <span>3. Pickup from Renter</span>
+                          </label>
+                          <label className={`check-item ${order.returnedToSellerAt ? "is-done" : ""}`}>
+                            <input
+                              type="checkbox"
+                              checked={!!order.returnedToSellerAt}
+                              disabled={!isAssignedToCurrentUser || !order.pickedUpFromRenterAt || !!order.returnedToSellerAt || submitting}
+                              onChange={() => handleUpdateOrderStatus(order._id, "ReturnedToSeller")}
+                            />
+                            <span>4. Return to Owner</span>
+                          </label>
+                        </div>
+                        {currentUser?.role === "delivery" && isAvailable && (
+                          <div className="card-actions">
+                            <button type="button" className="pickup-add-button" onClick={() => handleAcceptDelivery(order._id)} disabled={submitting}>
+                              + Claim Delivery
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="empty-state">
+                {currentUser?.role === "delivery" && deliveryView === "completed"
+                  ? "No completed deliveries yet."
+                  : "No pickup and delivery orders available."}
+              </div>
+            )}
+          </section>
+        )}
+
+        {activeSection === "help" && (
+          <section className="panel">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Support</p>
+                <h3>Help</h3>
+              </div>
+            </div>
+
+            <div className="help-grid">
+              <article>
+                <h4>How to add an item</h4>
+                <p>Open Add item, upload your main image, choose a category, fill rental details, and publish.</p>
+              </article>
+              <article>
+                <h4>How to rent</h4>
+                <p>Browse the home section, filter with category, and click Rent now on any product card with a user account.</p>
+              </article>
+              <article>
+                <h4>Pickup delivery page</h4>
+                <p>Delivery partners can open /pickup_delivery and click + to claim an available rental delivery.</p>
+              </article>
+            </div>
+          </section>
+        )}
+
+        {message && activeSection !== "add-item" && <div className="status-banner">{message}</div>}
+      </main>
+    </div>
+  );
+}
+
+function resolveError(error, fallbackMessage) {
+  return error?.response?.data?.message || fallbackMessage;
+}
