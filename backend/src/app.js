@@ -28,7 +28,7 @@ app.use("/api/items", itemRoutes);
 app.use("/api/orders", orderRoutes);
 
 if (process.env.NODE_ENV === "production") {
-  const frontendDistPath = path.resolve("frontend/dist");
+  const frontendDistPath = path.resolve("..", "frontend", "dist");
   app.use(express.static(frontendDistPath));
 
   app.get("*", (_req, res) => {
