@@ -2,9 +2,53 @@ import mongoose from "mongoose";
 import { Order } from "../models/Order.js";
 import { Item } from "../models/Item.js";
 import { User } from "../models/User.js";
+import { DeliveryEarning } from "../models/DeliveryEarning.js";
+import { SellerEarning } from "../models/SellerEarning.js";
+import { cloudinary } from "../config/cloudinary.js";
+import { sendEmail } from "../utils/email.js";
+
+function assertCloudinaryConfig() {
+  if (
+    !process.env.CLOUDINARY_CLOUD_NAME ||
+    !process.env.CLOUDINARY_API_KEY ||
+    !process.env.CLOUDINARY_API_SECRET
+  ) {
+    throw new Error("Cloudinary environment variables are missing.");
+  }
+}
+
+function uploadToCloudinary(file, folder = "ranter/orders") {
+  if (!file) {
+    return Promise.resolve("");
+  }
+
+  const resourceType = file.mimetype.startsWith("video/") ? "video" : "image";
+  const originalName = file.originalname.replace(/\.[^/.]+$/, "");
+  const publicId = `${Date.now()}-${originalName}`.replace(/[^a-zA-Z0-9-_]/g, "-");
+
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder,
+        public_id: publicId,
+        resource_type: resourceType,
+      },
+      (error, result) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve(result?.secure_url || "");
+      },
+    );
+
+    stream.end(file.buffer);
+  });
+}
 
 export async function createOrder(req, res) {
-  const { userId, itemId, panNumber, aadhaarNumber, phoneNumber, pinCode, address, rentalDays } = req.body;
+  const { userId, itemId, phoneNumber, pinCode, address, rentalDays } = req.body;
 
   if (!mongoose.isValidObjectId(userId)) {
     return res.status(401).json({ message: "A logged in user is required." });
@@ -14,12 +58,12 @@ export async function createOrder(req, res) {
     return res.status(400).json({ message: "Invalid item id." });
   }
 
-  if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/i.test(panNumber || "")) {
-    return res.status(400).json({ message: "PAN number must be a valid 10-character PAN." });
+  if (!req.files?.panCardImage?.[0]) {
+    return res.status(400).json({ message: "PAN card image is required." });
   }
 
-  if (!/^\d{12}$/.test(aadhaarNumber || "")) {
-    return res.status(400).json({ message: "Aadhaar number must be exactly 12 digits." });
+  if (!req.files?.aadhaarCardImage?.[0]) {
+    return res.status(400).json({ message: "Aadhaar card image is required." });
   }
 
   if (!/^\d{10}$/.test(phoneNumber || "")) {
@@ -52,15 +96,22 @@ export async function createOrder(req, res) {
     return res.status(409).json({ message: "This item is already ordered." });
   }
 
+  assertCloudinaryConfig();
+
+  const [panCardImage, aadhaarCardImage] = await Promise.all([
+    uploadToCloudinary(req.files.panCardImage[0]),
+    uploadToCloudinary(req.files.aadhaarCardImage[0]),
+  ]);
+
   const order = await Order.create({
     item: itemId,
     renterUser: userId,
     renter: {
-      panNumber: panNumber.toUpperCase(),
-      aadhaarNumber,
+      panCardImage,
+      aadhaarCardImage,
       phoneNumber,
       pinCode,
-      address: address.trim(),
+      address: String(address || "").trim(),
       rentalDays: parsedRentalDays,
     },
   });
@@ -77,9 +128,7 @@ export async function getOrders(req, res) {
 
   if (view === "pickup_delivery") {
     if (mongoose.isValidObjectId(userId)) {
-      query.$or = [{ deliveryPartner: null }, { deliveryPartner: userId }];
-    } else {
-      query.deliveryPartner = null;
+      query.$or = [{ deliveryPartner: null, status: { $ne: "Placed" } }, { deliveryPartner: userId }];
     }
   } else if (mongoose.isValidObjectId(userId)) {
     // Return orders where user is renter OR user is the owner of the item
@@ -99,6 +148,111 @@ export async function getOrders(req, res) {
     .populate("renterUser deliveryPartner")
     .sort({ createdAt: -1 });
   res.json(orders);
+}
+
+export async function approveOrder(req, res) {
+  const { orderId } = req.params;
+  const { deliveryCharge } = req.body;
+
+  if (!mongoose.isValidObjectId(orderId)) {
+    return res.status(400).json({ message: "Invalid order id." });
+  }
+
+  const updateFields = { status: "Approved" };
+  if (deliveryCharge !== undefined) {
+    updateFields.deliveryCharge = Number(deliveryCharge) || 0;
+  }
+
+  const order = await Order.findOneAndUpdate(
+    { _id: orderId, status: "Placed" },
+    updateFields,
+    { new: true }
+  ).populate({
+    path: "item",
+    populate: { path: "ownerUser" },
+  }).populate("renterUser deliveryPartner");
+
+  if (!order) {
+    return res.status(404).json({ message: "Order not found or already approved." });
+  }
+
+  res.json(order);
+}
+
+export async function setDeliveryCharge(req, res) {
+  const { orderId } = req.params;
+  const { deliveryCharge } = req.body;
+
+  if (!mongoose.isValidObjectId(orderId)) {
+    return res.status(400).json({ message: "Invalid order id." });
+  }
+
+  const parsedCharge = Number(deliveryCharge);
+  if (isNaN(parsedCharge) || parsedCharge < 0) {
+    return res.status(400).json({ message: "Invalid delivery charge." });
+  }
+
+  const order = await Order.findByIdAndUpdate(
+    orderId,
+    { deliveryCharge: parsedCharge },
+    { new: true }
+  ).populate({
+    path: "item",
+    populate: { path: "ownerUser" },
+  }).populate("renterUser deliveryPartner");
+
+  if (!order) {
+    return res.status(404).json({ message: "Order not found." });
+  }
+
+  res.json(order);
+}
+
+export async function deleteOrder(req, res) {
+  const { orderId } = req.params;
+  const { adminId, userId } = req.query;
+
+  if (!mongoose.isValidObjectId(orderId)) {
+    return res.status(400).json({ message: "Invalid order id." });
+  }
+
+  const order = await Order.findById(orderId);
+  if (!order) {
+    return res.status(404).json({ message: "Order not found." });
+  }
+
+  if (adminId) {
+    if (!mongoose.isValidObjectId(adminId)) {
+      return res.status(401).json({ message: "A logged in admin is required." });
+    }
+    const adminUser = await User.findById(adminId);
+    if (!adminUser || adminUser.role !== "admin") {
+      return res.status(403).json({ message: "Only admins can perform this action as admin." });
+    }
+  } else if (userId) {
+    if (!mongoose.isValidObjectId(userId)) {
+      return res.status(401).json({ message: "A logged in user is required." });
+    }
+    if (order.renterUser.toString() !== userId) {
+      return res.status(403).json({ message: "You can only delete your own orders." });
+    }
+    const canCancel = order.status === "Placed" || order.status === "Approved";
+    const canDelete = order.status === "ReturnedToSeller";
+    if (!canCancel && !canDelete) {
+      return res.status(400).json({ message: "Order cannot be cancelled or deleted at this stage." });
+    }
+  } else {
+    return res.status(401).json({ message: "User or admin id is required." });
+  }
+
+  await Order.findByIdAndDelete(orderId);
+
+  // Restore item availability if it was cancelled and not already completed
+  if (order.status !== "ReturnedToSeller") {
+    await Item.findByIdAndUpdate(order.item, { isAvailable: true });
+  }
+
+  res.json({ message: "Order deleted successfully." });
 }
 
 export async function assignDeliveryPartner(req, res) {
@@ -129,10 +283,29 @@ export async function assignDeliveryPartner(req, res) {
       status: "Assigned",
     },
     { new: true },
-  ).populate("item renterUser deliveryPartner");
+  ).populate({
+    path: "item",
+    populate: { path: "ownerUser" },
+  }).populate("renterUser deliveryPartner");
 
   if (!order) {
     return res.status(409).json({ message: "This delivery has already been assigned." });
+  }
+
+  try {
+    const totalAmount = (order.renter.rentalDays * order.item.rentCost) + (order.deliveryCharge || 0);
+    
+    if (order.renterUser?.email) {
+      const renterMessage = `Your delivery for ${order.item.brandName} has been accepted!\n\nProduct Details:\nBrand: ${order.item.brandName}\nCategory: ${order.item.category}\nRental Days: ${order.renter.rentalDays}\n\nTotal Amount: ₹${totalAmount} (${order.renter.rentalDays} days * ₹${order.item.rentCost}/day + ₹${order.deliveryCharge || 0} delivery charge)\n\nDelivery Partner Phone: ${order.deliveryPartner.phoneNumber}`;
+      sendEmail(order.renterUser.email, "Your Item Delivery Accepted", renterMessage).catch(console.error);
+    }
+
+    if (order.item?.ownerUser?.email) {
+      const sellerMessage = `Your product ${order.item.brandName} has been rented.\n\nKeep your product ready it has been rented.\n\nDelivery Partner Phone: ${order.deliveryPartner.phoneNumber}`;
+      sendEmail(order.item.ownerUser.email, "Your Product has been Rented", sellerMessage).catch(console.error);
+    }
+  } catch (error) {
+    console.error("Failed to send notification emails:", error);
   }
 
   res.json(order);
@@ -179,6 +352,42 @@ export async function updateOrderStatus(req, res) {
 
   if (nextStatus === "ReturnedToSeller") {
     await Item.findByIdAndUpdate(order.item._id, { isAvailable: true });
+    
+    // Update earnings for delivery partner
+    const deliveryCharge = order.deliveryCharge || 0;
+    const earningAmount = deliveryCharge * 0.90;
+    
+    if (earningAmount > 0) {
+      await DeliveryEarning.findOneAndUpdate(
+        { deliveryPartner: deliveryUserId },
+        { 
+          $inc: { 
+            totalAmount: earningAmount,
+            amountLeft: earningAmount
+          }
+        },
+        { upsert: true, new: true }
+      );
+    }
+
+    // Update earnings for seller
+    if (order.item.ownerUser) {
+      const rentalCharge = (order.renter?.rentalDays || 1) * (order.item.rentCost || 0);
+      const sellerEarningAmount = rentalCharge * 0.90;
+
+      if (sellerEarningAmount > 0) {
+        await SellerEarning.findOneAndUpdate(
+          { sellerUser: order.item.ownerUser },
+          {
+            $inc: {
+              totalAmount: sellerEarningAmount,
+              amountLeft: sellerEarningAmount
+            }
+          },
+          { upsert: true, new: true }
+        );
+      }
+    }
   }
 
   res.json(order);

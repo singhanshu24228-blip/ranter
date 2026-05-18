@@ -2,18 +2,13 @@ import mongoose from "mongoose";
 
 const renterSchema = new mongoose.Schema(
   {
-    panNumber: {
+    panCardImage: {
       type: String,
       required: true,
-      trim: true,
-      uppercase: true,
-      match: /^[A-Z]{5}[0-9]{4}[A-Z]$/,
     },
-    aadhaarNumber: {
+    aadhaarCardImage: {
       type: String,
       required: true,
-      trim: true,
-      match: /^\d{12}$/,
     },
     phoneNumber: {
       type: String,
@@ -56,12 +51,16 @@ const orderSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["Placed", "Assigned", "PickedUpFromSeller", "DeliveredToRenter", "PickedUpFromRenter", "ReturnedToSeller"],
+      enum: ["Placed", "Approved", "Assigned", "PickedUpFromSeller", "DeliveredToRenter", "PickedUpFromRenter", "ReturnedToSeller"],
       default: "Placed",
     },
     renter: {
       type: renterSchema,
       required: false,
+    },
+    deliveryCharge: {
+      type: Number,
+      default: 0,
     },
     deliveryPartner: {
       type: mongoose.Schema.Types.ObjectId,

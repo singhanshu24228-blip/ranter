@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import api from "./api";
 
-const categories = ["Clothing", "Electronics", "Bike", "Cars", "Furniture", "House"];
+const categories = ["Clothing", "Electronics", "Bike", "Cars", "Furniture", "Book"];
 const authRoles = [
   { id: "user", label: "User" },
   { id: "delivery", label: "Delivery" },
@@ -26,8 +26,6 @@ const initialFormState = {
 };
 
 const initialRentFormState = {
-  panNumber: "",
-  aadhaarNumber: "",
   phoneNumber: "",
   buildingNo: "",
   landmark: "",
@@ -36,7 +34,6 @@ const initialRentFormState = {
   city: "",
   district: "",
   state: "",
-  address: "",
   pinCode: "",
   rentalDays: "",
 };
@@ -195,6 +192,8 @@ export default function App() {
   const [message, setMessage] = useState("");
   const [selectedRentItemId, setSelectedRentItemId] = useState("");
   const [rentFormState, setRentFormState] = useState(initialRentFormState);
+  const [rentFiles, setRentFiles] = useState({ panCardImage: null, aadhaarCardImage: null });
+  const [rentPreviews, setRentPreviews] = useState({ panCardImage: "", aadhaarCardImage: "" });
   const [editingItemId, setEditingItemId] = useState("");
   const [currentUser, setCurrentUser] = useState(() => {
     const storedUser = window.localStorage.getItem("rentera-user");
@@ -211,6 +210,10 @@ export default function App() {
   const [otp, setOtp] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [selectedViewItemId, setSelectedViewItemId] = useState("");
+  const [showEarningsModal, setShowEarningsModal] = useState(false);
+  const [earningsData, setEarningsData] = useState(null);
+  const [showSellerEarningsModal, setShowSellerEarningsModal] = useState(false);
+  const [sellerEarningsData, setSellerEarningsData] = useState(null);
 
   useEffect(() => {
     async function loadData() {
@@ -312,6 +315,17 @@ export default function App() {
   function handleRentInputChange(event) {
     const { name, value } = event.target;
     setRentFormState((current) => ({ ...current, [name]: value }));
+  }
+
+  function handleRentFileChange(event) {
+    const { name, files: selectedFiles } = event.target;
+    const file = selectedFiles?.[0] || null;
+
+    setRentFiles((current) => ({ ...current, [name]: file }));
+    setRentPreviews((current) => ({
+      ...current,
+      [name]: file ? URL.createObjectURL(file) : "",
+    }));
   }
 
   function handleAuthInputChange(event) {
@@ -694,12 +708,14 @@ export default function App() {
     }
 
     if (currentUser.role !== "user") {
-      setMessage("Only user accounts can rent items.");
+      setMessage("Only users can rent items.");
       return;
     }
 
     setSelectedRentItemId(itemId);
     setRentFormState(initialRentFormState);
+    setRentFiles({ panCardImage: null, aadhaarCardImage: null });
+    setRentPreviews({ panCardImage: "", aadhaarCardImage: "" });
     setMessage("");
   }
 
@@ -717,13 +733,13 @@ export default function App() {
       return;
     }
 
-    if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/i.test(rentFormState.panNumber)) {
-      setMessage("PAN number must be a valid 10-character PAN.");
+    if (!rentFiles.panCardImage) {
+      setMessage("PAN card image is required.");
       return;
     }
 
-    if (!/^\d{12}$/.test(rentFormState.aadhaarNumber)) {
-      setMessage("Aadhaar number must be exactly 12 digits.");
+    if (!rentFiles.aadhaarCardImage) {
+      setMessage("Aadhaar card image is required.");
       return;
     }
 
@@ -751,11 +767,24 @@ export default function App() {
     try {
       setSubmitting(true);
       setMessage("");
-      const response = await api.post("/orders", {
-        userId: currentUser._id,
-        itemId: selectedRentItemId,
-        ...rentFormState,
-        address: combinedRentAddress,
+
+      const payload = new FormData();
+      payload.append("userId", currentUser._id);
+      payload.append("itemId", selectedRentItemId);
+      payload.append("address", combinedRentAddress);
+      
+      Object.entries(rentFormState).forEach(([key, value]) => {
+        payload.append(key, value);
+      });
+
+      Object.entries(rentFiles).forEach(([key, file]) => {
+        if (file) {
+          payload.append(key, file);
+        }
+      });
+
+      const response = await api.post("/orders", payload, {
+        headers: { "Content-Type": "multipart/form-data" },
       });
       setOrders((current) => [response.data, ...current]);
 
@@ -765,6 +794,8 @@ export default function App() {
 
       setSelectedRentItemId("");
       setRentFormState(initialRentFormState);
+      setRentFiles({ panCardImage: null, aadhaarCardImage: null });
+      setRentPreviews({ panCardImage: "", aadhaarCardImage: "" });
       setActiveSection("your-orders");
       setMessage("Order placed successfully.");
     } catch (error) {
@@ -796,6 +827,82 @@ export default function App() {
       setMessage("Delivery job created and assigned to you.");
     } catch (error) {
       setMessage(resolveError(error, "Failed to claim delivery."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleApproveOrder(orderId) {
+    if (!currentUser || currentUser.role !== "admin") return;
+    const chargeInput = window.prompt("Enter delivery charge (optional, default is 0):", "0");
+    if (chargeInput === null) return; // cancelled
+
+    const deliveryCharge = Number(chargeInput) || 0;
+
+    try {
+      setSubmitting(true);
+      setMessage("");
+      const response = await api.post(`/orders/${orderId}/approve`, { deliveryCharge });
+      const updatedOrder = response.data;
+      setDeliveryOrders((current) => current.map((order) => (order._id === updatedOrder._id ? updatedOrder : order)));
+      setMessage(`Order approved for delivery with a charge of ₹${deliveryCharge}.`);
+    } catch (error) {
+      setMessage(resolveError(error, "Failed to approve order."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleSetDeliveryCharge(orderId) {
+    if (!currentUser || currentUser.role !== "admin") return;
+    const chargeInput = window.prompt("Enter new delivery charge:", "0");
+    if (chargeInput === null) return;
+
+    const deliveryCharge = Number(chargeInput) || 0;
+
+    try {
+      setSubmitting(true);
+      setMessage("");
+      const response = await api.post(`/orders/${orderId}/delivery-charge`, { deliveryCharge });
+      const updatedOrder = response.data;
+      setDeliveryOrders((current) => current.map((order) => (order._id === updatedOrder._id ? updatedOrder : order)));
+      setMessage(`Delivery charge updated to ₹${deliveryCharge}.`);
+    } catch (error) {
+      setMessage(resolveError(error, "Failed to update delivery charge."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleDeleteOrder(orderId) {
+    if (!currentUser || currentUser.role !== "admin") return;
+    if (!window.confirm("Are you sure you want to delete this order? This action cannot be undone.")) return;
+    
+    try {
+      setSubmitting(true);
+      setMessage("");
+      await api.delete(`/orders/${orderId}`, { params: { adminId: currentUser._id } });
+      setDeliveryOrders((current) => current.filter((order) => order._id !== orderId));
+      setMessage("Order deleted successfully.");
+    } catch (error) {
+      setMessage(resolveError(error, "Failed to delete order."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleUserDeleteOrder(orderId) {
+    if (!currentUser) return;
+    if (!window.confirm("Are you sure you want to delete this order?")) return;
+    
+    try {
+      setSubmitting(true);
+      setMessage("");
+      await api.delete(`/orders/${orderId}`, { params: { userId: currentUser._id } });
+      setOrders((current) => current.filter((order) => order._id !== orderId));
+      setMessage("Order deleted successfully.");
+    } catch (error) {
+      setMessage(resolveError(error, "Failed to delete order."));
     } finally {
       setSubmitting(false);
     }
@@ -846,6 +953,60 @@ export default function App() {
       setMessage(`Order status updated to ${nextStatus}.`);
     } catch (error) {
       setMessage(resolveError(error, "Failed to update order status."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function fetchEarnings() {
+    if (!currentUser || currentUser.role !== "delivery") return;
+    try {
+      const response = await api.get(`/earnings/${currentUser._id}`);
+      setEarningsData(response.data);
+    } catch (error) {
+      console.error("Failed to load earnings", error);
+    }
+  }
+
+  async function handleRequestMoney(e) {
+    e.preventDefault();
+    const amount = Number(e.target.requestAmount.value);
+    try {
+      setSubmitting(true);
+      setMessage("");
+      const response = await api.post(`/earnings/${currentUser._id}/request`, { requestAmount: amount });
+      setEarningsData(response.data.earning);
+      setMessage(response.data.message);
+      e.target.reset();
+    } catch (error) {
+      setMessage(resolveError(error, "Failed to request money."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function fetchSellerEarnings() {
+    if (!currentUser) return;
+    try {
+      const response = await api.get(`/earnings/seller/${currentUser._id}`);
+      setSellerEarningsData(response.data);
+    } catch (error) {
+      console.error("Failed to load seller earnings", error);
+    }
+  }
+
+  async function handleRequestSellerMoney(e) {
+    e.preventDefault();
+    const amount = Number(e.target.requestAmount.value);
+    try {
+      setSubmitting(true);
+      setMessage("");
+      const response = await api.post(`/earnings/seller/${currentUser._id}/request`, { requestAmount: amount });
+      setSellerEarningsData(response.data.earning);
+      setMessage(response.data.message);
+      e.target.reset();
+    } catch (error) {
+      setMessage(resolveError(error, "Failed to request money."));
     } finally {
       setSubmitting(false);
     }
@@ -988,23 +1149,7 @@ export default function App() {
               </div>
             ) : (
               <form className="item-form" onSubmit={handleAuthSubmit}>
-                <div className="role-auth-grid">
-                  <article className={`role-auth-card ${authRole === "user" ? "is-active" : ""}`}>
-                    <span className="tag">User</span>
-                    <h4>Marketplace renter</h4>
-                    <p>Browse products, rent items, publish listings, and manage your own orders.</p>
-                  </article>
-                  <article className={`role-auth-card ${authRole === "delivery" ? "is-active" : ""}`}>
-                    <span className="tag">Delivery</span>
-                    <h4>Route operator</h4>
-                    <p>Claim pickup jobs, track incomplete deliveries, and mark completed handoffs.</p>
-                  </article>
-                  <article className={`role-auth-card ${authRole === "admin" ? "is-active" : ""}`}>
-                    <span className="tag">Admin</span>
-                    <h4>Operations control</h4>
-                    <p>Monitor logistics flow, open jobs, assigned jobs, and delivery outcomes.</p>
-                  </article>
-                </div>
+
 
                 <div className="auth-switch">
                   {authRoles.map((roleOption) => (
@@ -1206,7 +1351,7 @@ export default function App() {
                   )}
                 </div>
 
-                {authMode === "login" && (
+                {authMode === "login" && authRole === "user" && (
                   <div style={{ marginTop: "16px", textAlign: "center" }}>
                     <button
                       type="button"
@@ -1237,7 +1382,7 @@ export default function App() {
 
         {activeSection === "browse" && (
           <>
-            {(currentUser?.role === "guest" || currentUser?.role === "user") && (
+            {(currentRole === "guest" || currentRole === "user") && (
               <>
                 <section className="hero-card">
                   <div className="hero-copy">
@@ -1250,14 +1395,18 @@ export default function App() {
                       <strong>{catalogItems.length}</strong>
                       <span>Visible items</span>
                     </button>
-                    <button type="button" className="stat-card" onClick={() => setActiveSection("your-orders")}>
-                      <strong>{orders.length}</strong>
-                      <span>Your orders</span>
-                    </button>
-                    <button type="button" className="stat-card" onClick={() => setActiveSection("your-items")}>
-                      <strong>{allItems.length}</strong>
-                      <span>Your listed items</span>
-                    </button>
+                    {currentUser && (
+                      <>
+                        <button type="button" className="stat-card" onClick={() => setActiveSection("your-orders")}>
+                          <strong>{orders.length}</strong>
+                          <span>Your orders</span>
+                        </button>
+                        <button type="button" className="stat-card" onClick={() => setActiveSection("your-items")}>
+                          <strong>{allItems.length}</strong>
+                          <span>Your listed items</span>
+                        </button>
+                      </>
+                    )}
                   </div>
                 </section>
 
@@ -1290,16 +1439,18 @@ export default function App() {
                               <div><strong>Pin Code:</strong> {item.pinCode}</div>
                               <div><strong>Owner Contact:</strong> {item.phoneNumber}</div>
                             </div>
-                            <button
-                              className="primary-button rent-now-cta"
-                              onClick={() => {
-                                setSelectedViewItemId("");
-                                beginRent(item._id);
-                              }}
-                              disabled={item.isAvailable === false || orderedItemIds.has(item._id)}
-                            >
-                              {orderedItemIds.has(item._id) ? "Already ordered" : item.isAvailable === false ? "Currently Rented" : "Rent now"}
-                            </button>
+                            {currentUser && (
+                              <button
+                                className="primary-button rent-now-cta"
+                                onClick={() => {
+                                  setSelectedViewItemId("");
+                                  beginRent(item._id);
+                                }}
+                                disabled={item.isAvailable === false || orderedItemIds.has(item._id)}
+                              >
+                                {orderedItemIds.has(item._id) ? "Already ordered" : item.isAvailable === false ? "Currently Rented" : "Rent now"}
+                              </button>
+                            )}
                           </div>
                         </div>
                       );
@@ -1334,12 +1485,12 @@ export default function App() {
 
                         <div className="form-grid">
                           <label>
-                            <span>PAN number</span>
-                            <input type="text" name="panNumber" value={rentFormState.panNumber} onChange={handleRentInputChange} placeholder="ABCDE1234F" maxLength="10" required />
+                            <span>PAN card image</span>
+                            <input type="file" name="panCardImage" accept="image/*" onChange={handleRentFileChange} required />
                           </label>
                           <label>
-                            <span>Aadhaar number</span>
-                            <input type="text" name="aadhaarNumber" value={rentFormState.aadhaarNumber} onChange={handleRentInputChange} inputMode="numeric" maxLength="12" placeholder="123412341234" required />
+                            <span>Aadhaar card image</span>
+                            <input type="file" name="aadhaarCardImage" accept="image/*" onChange={handleRentFileChange} required />
                           </label>
                           <label>
                             <span>Phone number</span>
@@ -1407,16 +1558,18 @@ export default function App() {
                               <h4>{item.brandName}</h4>
                               <p className="description">{item.productDescription}</p>
                               <div className="card-actions">
-                                <button
-                                  className="primary-button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    beginRent(item._id);
-                                  }}
-                                  disabled={item.isAvailable === false || orderedItemIds.has(item._id)}
-                                >
-                                  {orderedItemIds.has(item._id) ? "Already ordered" : item.isAvailable === false ? "Currently Rented" : "Rent now"}
-                                </button>
+                                {currentUser && (
+                                  <button
+                                    className="primary-button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      beginRent(item._id);
+                                    }}
+                                    disabled={item.isAvailable === false || orderedItemIds.has(item._id)}
+                                  >
+                                    {orderedItemIds.has(item._id) ? "Already ordered" : item.isAvailable === false ? "Currently Rented" : "Rent now"}
+                                  </button>
+                                )}
                               </div>
                             </div>
                           </article>
@@ -1492,40 +1645,40 @@ export default function App() {
                         })
                         .slice(0, 10)
                         .map((order) => {
-                        const item = order.item;
-                        if (!item) return null;
+                          const item = order.item;
+                          if (!item) return null;
 
-                        return (
-                          <article key={item._id} className="product-card">
-                            <img src={item.media.mainImage} alt={item.brandName} />
-                            <div className="card-body">
-                              <div className="meta-row">
-                                <span className="tag">{item.category}</span>
-                                {calculateProximityScore(currentUser?.address, item.address) >= 1000 ? (
-                                  <span className="tag" style={{ background: "var(--accent)", color: "var(--text)" }}>Near You</span>
-                                ) : (
-                                  <span className="price">Unassigned Job</span>
-                                )}
+                          return (
+                            <article key={item._id} className="product-card">
+                              <img src={item.media.mainImage} alt={item.brandName} />
+                              <div className="card-body">
+                                <div className="meta-row">
+                                  <span className="tag">{item.category}</span>
+                                  {calculateProximityScore(currentUser?.address, item.address) >= 1000 ? (
+                                    <span className="tag" style={{ background: "var(--accent)", color: "var(--text)" }}>Near You</span>
+                                  ) : (
+                                    <span className="price">Unassigned Job</span>
+                                  )}
+                                </div>
+                                <h4>{item.brandName}</h4>
+                                <p className="description">{item.productDescription}</p>
+                                <div className="card-actions">
+                                  <button
+                                    className="pickup-add-button"
+                                    onClick={() => handleClaimItemDelivery(item._id)}
+                                    disabled={submitting}
+                                    title="Claim job"
+                                  >
+                                    +
+                                  </button>
+                                  <span style={{ fontSize: "0.85rem", color: "var(--muted)" }}>
+                                    Job available
+                                  </span>
+                                </div>
                               </div>
-                              <h4>{item.brandName}</h4>
-                              <p className="description">{item.productDescription}</p>
-                              <div className="card-actions">
-                                <button
-                                  className="pickup-add-button"
-                                  onClick={() => handleClaimItemDelivery(item._id)}
-                                  disabled={submitting}
-                                  title="Claim job"
-                                >
-                                  +
-                                </button>
-                                <span style={{ fontSize: "0.85rem", color: "var(--muted)" }}>
-                                  Job available
-                                </span>
-                              </div>
-                            </div>
-                          </article>
-                        );
-                      })}
+                            </article>
+                          );
+                        })}
                     </div>
                   ) : (
                     <div className="empty-state">No unassigned rental jobs available right now.</div>
@@ -1727,8 +1880,8 @@ export default function App() {
                   <input type="number" min="1" name="rentCost" value={formState.rentCost} onChange={handleInputChange} placeholder="2500" required />
                 </label>
                 <label>
-                  <span>Product brand name</span>
-                  <input type="text" name="brandName" value={formState.brandName} onChange={handleInputChange} placeholder="Samsung, Honda, IKEA..." required />
+                  <span>{formState.category === "Book" ? "Book name" : "Product brand name"}</span>
+                  <input type="text" name="brandName" value={formState.brandName} onChange={handleInputChange} placeholder={formState.category === "Book" ? "e.g. The Great Gatsby" : "Samsung, Honda, IKEA..."} required />
                 </label>
                 <label className="full-width">
                   <span>Product description</span>
@@ -1894,7 +2047,53 @@ export default function App() {
                   <span className="toggle-label">Your Rent</span>
                   <span className="toggle-count">{yourRentOrders.length}</span>
                 </button>
+                <button
+                  type="button"
+                  className="order-toggle-btn"
+                  style={{ marginLeft: "auto", border: "none", background: "transparent", cursor: "pointer", padding: "0 16px" }}
+                  onClick={() => {
+                    if (!showSellerEarningsModal) fetchSellerEarnings();
+                    setShowSellerEarningsModal(!showSellerEarningsModal);
+                  }}
+                  title="90% of rent amount will add after complete delivery"
+                >
+                  <span className="toggle-icon" style={{ fontSize: "1.5rem" }}>💰</span>
+                </button>
               </div>
+
+              {showSellerEarningsModal && (
+                <div className="panel" style={{ marginTop: "16px", backgroundColor: "#f9f9f9", border: "1px solid #ddd" }}>
+                  <h4>Seller Earnings</h4>
+                  <p style={{ fontSize: "0.9rem", color: "#666", marginBottom: "16px" }}>90% of rent amount will add after complete delivery</p>
+                  
+                  {sellerEarningsData ? (
+                    <div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: "24px", marginBottom: "16px" }}>
+                        <div>
+                          <strong>Total Earned:</strong> <br/> ₹{sellerEarningsData.totalAmount || 0}
+                        </div>
+                        <div>
+                          <strong>Requested:</strong> <br/> ₹{sellerEarningsData.amountRequested || 0}
+                        </div>
+                        <div>
+                          <strong>Available to Request:</strong> <br/> ₹{sellerEarningsData.amountLeft || 0}
+                        </div>
+                      </div>
+                      <form onSubmit={handleRequestSellerMoney} style={{ display: "flex", gap: "8px", alignItems: "flex-end", flexWrap: "wrap" }}>
+                        <label style={{ flex: 1, minWidth: "150px" }}>
+                          <span style={{ display: "block", marginBottom: "4px", fontSize: "0.9rem" }}>Request Amount</span>
+                          <input type="number" name="requestAmount" max={sellerEarningsData.amountLeft} min="1" disabled={sellerEarningsData.amountLeft <= 0} required style={{ width: "100%", padding: "8px" }} />
+                        </label>
+                        <button type="submit" className="primary-button" disabled={submitting || sellerEarningsData.amountLeft <= 0}>
+                          Request Money
+                        </button>
+                      </form>
+                    </div>
+                  ) : (
+                    <p>Loading earnings...</p>
+                  )}
+                </div>
+              )}
 
               <p className="section-note order-view-desc">
                 {orderView === "you-rent"
@@ -1937,6 +2136,20 @@ export default function App() {
                           <span className={`stage-dot ${order.pickedUpFromRenterAt ? "is-done" : ""}`} title="Picked up from renter">3</span>
                           <span className={`stage-dot ${order.returnedToSellerAt ? "is-done" : ""}`} title="Returned to owner">4</span>
                         </div>
+                        {orderView === "you-rent" && (order.status === "Placed" || order.status === "Approved") && (
+                          <div style={{ marginTop: "16px" }}>
+                            <button type="button" className="secondary-button" style={{ color: "#d32f2f", borderColor: "#d32f2f" }} onClick={() => handleUserDeleteOrder(order._id)} disabled={submitting}>
+                              Cancel Order
+                            </button>
+                          </div>
+                        )}
+                        {orderView === "you-rent" && order.status === "ReturnedToSeller" && (
+                          <div style={{ marginTop: "16px" }}>
+                            <button type="button" className="secondary-button" onClick={() => handleUserDeleteOrder(order._id)} disabled={submitting}>
+                              Remove from History
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </article>
                   ))}
@@ -1981,9 +2194,54 @@ export default function App() {
                     <strong>/pickup_delivery</strong>
                     <span>Your delivery route page</span>
                   </article>
+                  <article 
+                    style={{ cursor: "pointer", position: "relative" }} 
+                    onClick={() => {
+                      if (!showEarningsModal) fetchEarnings();
+                      setShowEarningsModal(!showEarningsModal);
+                    }}
+                    title="90% of delivery amount will add after complete delivery"
+                  >
+                    <strong style={{ fontSize: "2rem" }}>💰</strong>
+                    <span>Your Earnings</span>
+                  </article>
                 </div>
 
-                <div className="auth-switch">
+                {showEarningsModal && (
+                  <div className="panel" style={{ marginTop: "16px", backgroundColor: "#f9f9f9", border: "1px solid #ddd" }}>
+                    <h4>Earnings Dashboard</h4>
+                    <p style={{ fontSize: "0.9rem", color: "#666", marginBottom: "16px" }}>90% of delivery amount will add after complete delivery</p>
+                    
+                    {earningsData ? (
+                      <div>
+                        <div style={{ display: "flex", gap: "24px", marginBottom: "16px" }}>
+                          <div>
+                            <strong>Total Earned:</strong> <br/> ₹{earningsData.totalAmount || 0}
+                          </div>
+                          <div>
+                            <strong>Requested:</strong> <br/> ₹{earningsData.amountRequested || 0}
+                          </div>
+                          <div>
+                            <strong>Available to Request:</strong> <br/> ₹{earningsData.amountLeft || 0}
+                          </div>
+                        </div>
+                        <form onSubmit={handleRequestMoney} style={{ display: "flex", gap: "8px", alignItems: "flex-end" }}>
+                          <label style={{ flex: 1 }}>
+                            <span style={{ display: "block", marginBottom: "4px", fontSize: "0.9rem" }}>Request Amount</span>
+                            <input type="number" name="requestAmount" max={earningsData.amountLeft} min="1" disabled={earningsData.amountLeft <= 0} required style={{ width: "100%", padding: "8px" }} />
+                          </label>
+                          <button type="submit" className="primary-button" disabled={submitting || earningsData.amountLeft <= 0}>
+                            Request Money
+                          </button>
+                        </form>
+                      </div>
+                    ) : (
+                      <p>Loading earnings...</p>
+                    )}
+                  </div>
+                )}
+
+                <div className="auth-switch" style={{ marginTop: "24px" }}>
                   <button
                     type="button"
                     className={`menu-link ${deliveryView === "incomplete" ? "is-active" : ""}`}
@@ -2035,9 +2293,20 @@ export default function App() {
                             <span>{order.renter?.address || "Not available"}</span><br />
                             <span>Pincode: {order.renter?.pinCode || "NA"}</span><br />
                             <span>📞 {order.renter?.phoneNumber || "Not available"}</span>
+                            {currentUser?.role === "admin" && order.renter && (
+                              <div style={{ marginTop: "8px", display: "flex", gap: "12px" }}>
+                                <a href={order.renter.panCardImage} target="_blank" rel="noreferrer" style={{ textDecoration: "underline", color: "var(--primary)" }}>View PAN Card</a>
+                                <a href={order.renter.aadhaarCardImage} target="_blank" rel="noreferrer" style={{ textDecoration: "underline", color: "var(--primary)" }}>View Aadhaar Card</a>
+                              </div>
+                            )}
                           </div>
                           <span>Rental days: {order.renter?.rentalDays || "Not available"}</span>
                           <span>Delivery partner: {order.deliveryPartner?.username || "Not assigned yet"}</span>
+                          {(currentUser?.role === "admin" || currentUser?.role === "delivery") && (
+                            <span style={{ fontWeight: "bold", marginTop: "4px", display: "block" }}>
+                              Delivery charge: ₹{order.deliveryCharge || 0}
+                            </span>
+                          )}
                         </div>
                         <div className="delivery-checklist">
                           <label className={`check-item ${order.pickedUpFromSellerAt ? "is-done" : ""}`}>
@@ -2081,6 +2350,23 @@ export default function App() {
                           <div className="card-actions">
                             <button type="button" className="pickup-add-button" onClick={() => handleAcceptDelivery(order._id)} disabled={submitting}>
                               + Claim Delivery
+                            </button>
+                          </div>
+                        )}
+                        {currentUser?.role === "admin" && (
+                          <div className="card-actions" style={{ marginTop: "16px", display: "flex", flexWrap: "wrap", gap: "12px" }}>
+                            {order.status === "Placed" && (
+                              <button type="button" className="primary-button" onClick={() => handleApproveOrder(order._id)} disabled={submitting}>
+                                Approve for Delivery
+                              </button>
+                            )}
+                            {order.status !== "Placed" && (
+                              <button type="button" className="secondary-button" onClick={() => handleSetDeliveryCharge(order._id)} disabled={submitting}>
+                                Set Delivery Charge
+                              </button>
+                            )}
+                            <button type="button" className="primary-button" style={{ backgroundColor: "#d32f2f", color: "white" }} onClick={() => handleDeleteOrder(order._id)} disabled={submitting}>
+                              Delete Order
                             </button>
                           </div>
                         )}

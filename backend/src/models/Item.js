@@ -25,7 +25,7 @@ const itemSchema = new mongoose.Schema(
   {
     category: {
       type: String,
-      enum: ["Clothing", "Electronics", "Bike", "Cars", "Furniture", "House"],
+      enum: ["Clothing", "Electronics", "Bike", "Cars", "Furniture", "Book"],
       required: true,
       trim: true,
     },
