@@ -87,6 +87,14 @@ const orderSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    isPaid: {
+      type: Boolean,
+      default: false,
+    },
+    razorpayPaymentId: {
+      type: String,
+      default: null,
+    },
   },
   {
     timestamps: true,

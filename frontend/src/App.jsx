@@ -92,7 +92,7 @@ const roleThemes = {
 };
 
 function resolveInitialSection() {
-  return window.location.pathname === "/pickup_delivery" ? "pickup-delivery" : "auth";
+  return window.location.pathname === "/pickup_delivery" ? "pickup-delivery" : "browse";
 }
 
 function formatAddressDetail(values) {
@@ -278,7 +278,7 @@ export default function App() {
 
   useEffect(() => {
     function handlePopState() {
-      setActiveSection(window.location.pathname === "/pickup_delivery" ? "pickup-delivery" : currentUser ? "browse" : "auth");
+      setActiveSection(window.location.pathname === "/pickup_delivery" ? "pickup-delivery" : "browse");
     }
 
     window.addEventListener("popstate", handlePopState);
@@ -903,6 +903,60 @@ export default function App() {
       setMessage("Order deleted successfully.");
     } catch (error) {
       setMessage(resolveError(error, "Failed to delete order."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handlePayment(order) {
+    try {
+      setSubmitting(true);
+      setMessage("");
+      const res = await api.post(`/payments/${order._id}/create`);
+      const paymentOrder = res.data;
+
+      const options = {
+        key: "rzp_live_Ss66wqcYTIqaEk", // using provided API key directly
+        amount: paymentOrder.amount,
+        currency: paymentOrder.currency,
+        name: "Rentera",
+        description: `Payment for ${order.item.brandName}`,
+        order_id: paymentOrder.id,
+        handler: async function (response) {
+          try {
+            setSubmitting(true);
+            const verifyRes = await api.post(`/payments/${order._id}/verify`, {
+              razorpay_order_id: response.razorpay_order_id,
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_signature: response.razorpay_signature,
+            });
+            const updatedOrder = verifyRes.data.order;
+            setOrders((current) => current.map((o) => (o._id === updatedOrder._id ? updatedOrder : o)));
+            setMessage("Payment successful. Receipt sent to your email.");
+          } catch (error) {
+            setMessage(resolveError(error, "Payment verification failed."));
+          } finally {
+            setSubmitting(false);
+          }
+        },
+        prefill: {
+          name: currentUser.username,
+          email: currentUser.email,
+          contact: currentUser.phoneNumber || order.renter?.phoneNumber || ""
+        },
+        theme: {
+          color: "#3399cc"
+        }
+      };
+
+      const rzp1 = new window.Razorpay(options);
+      rzp1.on('payment.failed', function (response){
+          setMessage("Payment failed. " + response.error.description);
+      });
+      rzp1.open();
+
+    } catch (error) {
+      setMessage(resolveError(error, "Failed to initialize payment."));
     } finally {
       setSubmitting(false);
     }
@@ -2136,6 +2190,18 @@ export default function App() {
                           <span className={`stage-dot ${order.pickedUpFromRenterAt ? "is-done" : ""}`} title="Picked up from renter">3</span>
                           <span className={`stage-dot ${order.returnedToSellerAt ? "is-done" : ""}`} title="Returned to owner">4</span>
                         </div>
+                        {orderView === "you-rent" && order.status !== "Placed" && !order.isPaid && (
+                          <div style={{ marginTop: "16px" }}>
+                            <button type="button" className="primary-button" onClick={() => handlePayment(order)} disabled={submitting}>
+                              Pay ₹{(order.item.rentCost * (order.renter?.rentalDays || 1)) + (order.deliveryCharge || 0)} Now
+                            </button>
+                          </div>
+                        )}
+                        {orderView === "you-rent" && order.isPaid && (
+                          <div style={{ marginTop: "16px", color: "green", fontWeight: "bold" }}>
+                            ✅ Payment Completed
+                          </div>
+                        )}
                         {orderView === "you-rent" && (order.status === "Placed" || order.status === "Approved") && (
                           <div style={{ marginTop: "16px" }}>
                             <button type="button" className="secondary-button" style={{ color: "#d32f2f", borderColor: "#d32f2f" }} onClick={() => handleUserDeleteOrder(order._id)} disabled={submitting}>
