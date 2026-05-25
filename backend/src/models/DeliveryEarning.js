@@ -20,6 +20,12 @@ const deliveryEarningSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    paymentDetails: {
+      upiId: { type: String, default: "" },
+      qrCode: { type: String, default: "" },
+      accountNumber: { type: String, default: "" },
+      ifscCode: { type: String, default: "" },
+    },
   },
   { timestamps: true }
 );

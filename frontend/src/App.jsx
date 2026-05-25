@@ -214,6 +214,7 @@ export default function App() {
   const [earningsData, setEarningsData] = useState(null);
   const [showSellerEarningsModal, setShowSellerEarningsModal] = useState(false);
   const [sellerEarningsData, setSellerEarningsData] = useState(null);
+  const [adminRequests, setAdminRequests] = useState({ deliveryRequests: [], sellerRequests: [] });
 
   useEffect(() => {
     async function loadData() {
@@ -229,13 +230,17 @@ export default function App() {
             : currentUser?.role === "admin"
               ? api.get("/orders", { params: { view: "pickup_delivery" } })
               : Promise.resolve({ data: [] }),
+          currentUser?.role === "admin"
+            ? api.get("/earnings/admin/requests")
+            : Promise.resolve({ data: { deliveryRequests: [], sellerRequests: [] } }),
         ];
 
-        const [catalogResponse, allItemsResponse, ordersResponse, deliveryOrdersResponse] = await Promise.all(requests);
+        const [catalogResponse, allItemsResponse, ordersResponse, deliveryOrdersResponse, adminReqResponse] = await Promise.all(requests);
         setCatalogItems(catalogResponse.data);
         setAllItems(allItemsResponse.data);
         setOrders(ordersResponse.data);
         setDeliveryOrders(deliveryOrdersResponse.data);
+        setAdminRequests(adminReqResponse.data);
       } catch (error) {
         setMessage(resolveError(error, "Unable to load data."));
       } finally {
@@ -1025,10 +1030,24 @@ export default function App() {
   async function handleRequestMoney(e) {
     e.preventDefault();
     const amount = Number(e.target.requestAmount.value);
+    const upiId = e.target.upiId?.value || "";
+    const accountNumber = e.target.accountNumber?.value || "";
+    const ifscCode = e.target.ifscCode?.value || "";
+
+    if (!upiId && (!accountNumber || !ifscCode)) {
+      setMessage("Please provide either UPI ID or Bank Details (Account Number & IFSC Code).");
+      return;
+    }
+
     try {
       setSubmitting(true);
       setMessage("");
-      const response = await api.post(`/earnings/${currentUser._id}/request`, { requestAmount: amount });
+      const response = await api.post(`/earnings/${currentUser._id}/request`, { 
+        requestAmount: amount,
+        upiId,
+        accountNumber,
+        ifscCode
+      });
       setEarningsData(response.data.earning);
       setMessage(response.data.message);
       e.target.reset();
@@ -1052,15 +1071,54 @@ export default function App() {
   async function handleRequestSellerMoney(e) {
     e.preventDefault();
     const amount = Number(e.target.requestAmount.value);
+    const upiId = e.target.upiId?.value || "";
+    const accountNumber = e.target.accountNumber?.value || "";
+    const ifscCode = e.target.ifscCode?.value || "";
+
+    if (!upiId && (!accountNumber || !ifscCode)) {
+      setMessage("Please provide either UPI ID or Bank Details (Account Number & IFSC Code).");
+      return;
+    }
+
     try {
       setSubmitting(true);
       setMessage("");
-      const response = await api.post(`/earnings/seller/${currentUser._id}/request`, { requestAmount: amount });
+      const response = await api.post(`/earnings/seller/${currentUser._id}/request`, { 
+        requestAmount: amount,
+        upiId,
+        accountNumber,
+        ifscCode
+      });
       setSellerEarningsData(response.data.earning);
       setMessage(response.data.message);
       e.target.reset();
     } catch (error) {
       setMessage(resolveError(error, "Failed to request money."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function fetchAdminRequests() {
+    if (!currentUser || currentUser.role !== "admin") return;
+    try {
+      const response = await api.get("/earnings/admin/requests");
+      setAdminRequests(response.data);
+    } catch (error) {
+      console.error("Failed to load admin requests", error);
+    }
+  }
+
+  async function handleApproveRequest(id, type) {
+    if (!currentUser || currentUser.role !== "admin") return;
+    try {
+      setSubmitting(true);
+      setMessage("");
+      await api.post(`/earnings/admin/approve/${id}`, { type });
+      await fetchAdminRequests();
+      setMessage("Request approved successfully.");
+    } catch (error) {
+      setMessage(resolveError(error, "Failed to approve request."));
     } finally {
       setSubmitting(false);
     }
@@ -1890,6 +1948,78 @@ export default function App() {
                     </div>
                   </form>
                 </section>
+
+                <section className="panel" style={{ marginTop: "32px" }}>
+                  <div className="section-heading">
+                    <div>
+                      <p className="eyebrow">Financial operations</p>
+                      <h3>Payout Requests</h3>
+                    </div>
+                  </div>
+                  
+                  <div className="card-grid">
+                    {adminRequests.sellerRequests.length > 0 || adminRequests.deliveryRequests.length > 0 ? (
+                      <>
+                        {adminRequests.sellerRequests.map((req) => (
+                          <article key={req._id} className="info-card" style={{ borderLeft: "4px solid var(--primary)" }}>
+                            <div className="card-body">
+                              <div className="meta-row">
+                                <span className="tag">Seller</span>
+                                <span className="price">₹{req.amountRequested}</span>
+                              </div>
+                              <h4>{req.sellerUser?.username}</h4>
+                              <div className="detail-list">
+                                <span>Phone: {req.sellerUser?.phoneNumber}</span>
+                                <span>Total Amount: ₹{req.totalAmount}</span>
+                                <span>Amount Left: ₹{req.amountLeft}</span>
+                                <div style={{ marginTop: "8px", padding: "8px", background: "#f5f5f5", borderRadius: "4px" }}>
+                                  <strong>Payment Details:</strong>
+                                  {req.paymentDetails?.upiId && <div>UPI ID: {req.paymentDetails.upiId}</div>}
+                                  {req.paymentDetails?.accountNumber && <div>Account No: {req.paymentDetails.accountNumber}</div>}
+                                  {req.paymentDetails?.ifscCode && <div>IFSC Code: {req.paymentDetails.ifscCode}</div>}
+                                </div>
+                              </div>
+                              <div className="card-actions" style={{ marginTop: "16px" }}>
+                                <button className="primary-button" onClick={() => handleApproveRequest(req._id, "seller")} disabled={submitting}>
+                                  Approve Payment
+                                </button>
+                              </div>
+                            </div>
+                          </article>
+                        ))}
+                        {adminRequests.deliveryRequests.map((req) => (
+                          <article key={req._id} className="info-card" style={{ borderLeft: "4px solid var(--accent)" }}>
+                            <div className="card-body">
+                              <div className="meta-row">
+                                <span className="tag">Delivery Partner</span>
+                                <span className="price">₹{req.amountRequested}</span>
+                              </div>
+                              <h4>{req.deliveryPartner?.username}</h4>
+                              <div className="detail-list">
+                                <span>Phone: {req.deliveryPartner?.phoneNumber}</span>
+                                <span>Total Amount: ₹{req.totalAmount}</span>
+                                <span>Amount Left: ₹{req.amountLeft}</span>
+                                <div style={{ marginTop: "8px", padding: "8px", background: "#f5f5f5", borderRadius: "4px" }}>
+                                  <strong>Payment Details:</strong>
+                                  {req.paymentDetails?.upiId && <div>UPI ID: {req.paymentDetails.upiId}</div>}
+                                  {req.paymentDetails?.accountNumber && <div>Account No: {req.paymentDetails.accountNumber}</div>}
+                                  {req.paymentDetails?.ifscCode && <div>IFSC Code: {req.paymentDetails.ifscCode}</div>}
+                                </div>
+                              </div>
+                              <div className="card-actions" style={{ marginTop: "16px" }}>
+                                <button className="primary-button" onClick={() => handleApproveRequest(req._id, "delivery")} disabled={submitting}>
+                                  Approve Payment
+                                </button>
+                              </div>
+                            </div>
+                          </article>
+                        ))}
+                      </>
+                    ) : (
+                      <div className="empty-state">No pending payout requests.</div>
+                    )}
+                  </div>
+                </section>
               </>
             )}
           </>
@@ -2134,9 +2264,21 @@ export default function App() {
                         </div>
                       </div>
                       <form onSubmit={handleRequestSellerMoney} style={{ display: "flex", gap: "8px", alignItems: "flex-end", flexWrap: "wrap" }}>
-                        <label style={{ flex: 1, minWidth: "150px" }}>
+                        <label style={{ flex: "1 1 150px" }}>
                           <span style={{ display: "block", marginBottom: "4px", fontSize: "0.9rem" }}>Request Amount</span>
                           <input type="number" name="requestAmount" max={sellerEarningsData.amountLeft} min="1" disabled={sellerEarningsData.amountLeft <= 0} required style={{ width: "100%", padding: "8px" }} />
+                        </label>
+                        <label style={{ flex: "1 1 150px" }}>
+                          <span style={{ display: "block", marginBottom: "4px", fontSize: "0.9rem" }}>UPI ID</span>
+                          <input type="text" name="upiId" style={{ width: "100%", padding: "8px" }} placeholder="Optional" />
+                        </label>
+                        <label style={{ flex: "1 1 150px" }}>
+                          <span style={{ display: "block", marginBottom: "4px", fontSize: "0.9rem" }}>Account No.</span>
+                          <input type="text" name="accountNumber" style={{ width: "100%", padding: "8px" }} placeholder="Optional" />
+                        </label>
+                        <label style={{ flex: "1 1 150px" }}>
+                          <span style={{ display: "block", marginBottom: "4px", fontSize: "0.9rem" }}>IFSC Code</span>
+                          <input type="text" name="ifscCode" style={{ width: "100%", padding: "8px" }} placeholder="Optional" />
                         </label>
                         <button type="submit" className="primary-button" disabled={submitting || sellerEarningsData.amountLeft <= 0}>
                           Request Money
@@ -2291,10 +2433,22 @@ export default function App() {
                             <strong>Available to Request:</strong> <br/> ₹{earningsData.amountLeft || 0}
                           </div>
                         </div>
-                        <form onSubmit={handleRequestMoney} style={{ display: "flex", gap: "8px", alignItems: "flex-end" }}>
-                          <label style={{ flex: 1 }}>
+                        <form onSubmit={handleRequestMoney} style={{ display: "flex", gap: "8px", alignItems: "flex-end", flexWrap: "wrap" }}>
+                          <label style={{ flex: "1 1 150px" }}>
                             <span style={{ display: "block", marginBottom: "4px", fontSize: "0.9rem" }}>Request Amount</span>
                             <input type="number" name="requestAmount" max={earningsData.amountLeft} min="1" disabled={earningsData.amountLeft <= 0} required style={{ width: "100%", padding: "8px" }} />
+                          </label>
+                          <label style={{ flex: "1 1 150px" }}>
+                            <span style={{ display: "block", marginBottom: "4px", fontSize: "0.9rem" }}>UPI ID</span>
+                            <input type="text" name="upiId" style={{ width: "100%", padding: "8px" }} placeholder="Optional" />
+                          </label>
+                          <label style={{ flex: "1 1 150px" }}>
+                            <span style={{ display: "block", marginBottom: "4px", fontSize: "0.9rem" }}>Account No.</span>
+                            <input type="text" name="accountNumber" style={{ width: "100%", padding: "8px" }} placeholder="Optional" />
+                          </label>
+                          <label style={{ flex: "1 1 150px" }}>
+                            <span style={{ display: "block", marginBottom: "4px", fontSize: "0.9rem" }}>IFSC Code</span>
+                            <input type="text" name="ifscCode" style={{ width: "100%", padding: "8px" }} placeholder="Optional" />
                           </label>
                           <button type="submit" className="primary-button" disabled={submitting || earningsData.amountLeft <= 0}>
                             Request Money
