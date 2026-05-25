@@ -138,8 +138,17 @@ export async function updateItem(req, res) {
     phoneNumber,
   } = req.body;
 
+  const existingItem = await Item.findOne({ _id: itemId, ownerUser: ownerUserId });
+  if (!existingItem) {
+    return res.status(404).json({ message: "Item not found for this user." });
+  }
+
+  if (existingItem.isAvailable === false) {
+    return res.status(400).json({ message: "Cannot edit this item while it is currently rented or in delivery." });
+  }
+
   const item = await Item.findByIdAndUpdate(
-    { _id: itemId, ownerUser: ownerUserId },
+    itemId,
     {
       category,
       rentCost,
@@ -154,10 +163,6 @@ export async function updateItem(req, res) {
       runValidators: true,
     },
   );
-
-  if (!item) {
-    return res.status(404).json({ message: "Item not found for this user." });
-  }
 
   res.json(item);
 }
@@ -174,12 +179,16 @@ export async function deleteItem(req, res) {
     return res.status(401).json({ message: "A logged in user is required." });
   }
 
-  const item = await Item.findOneAndDelete({ _id: itemId, ownerUser: ownerUserId });
-
-  if (!item) {
+  const existingItem = await Item.findOne({ _id: itemId, ownerUser: ownerUserId });
+  if (!existingItem) {
     return res.status(404).json({ message: "Item not found for this user." });
   }
 
+  if (existingItem.isAvailable === false) {
+    return res.status(400).json({ message: "Cannot delete this item while it is currently rented or in delivery." });
+  }
+
+  await Item.findByIdAndDelete(itemId);
   await Order.deleteMany({ item: itemId });
 
   res.json({ message: "Item deleted successfully.", itemId });

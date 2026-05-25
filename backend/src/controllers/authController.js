@@ -1,4 +1,7 @@
 import { User } from "../models/User.js";
+import { DeliveryPartnerDetail } from "../models/DeliveryPartnerDetail.js";
+import { Item } from "../models/Item.js";
+import { Order } from "../models/Order.js";
 import { hashPassword, verifyPassword } from "../utils/password.js";
 import { sendEmail } from "../utils/email.js";
 import crypto from "crypto";
@@ -145,6 +148,8 @@ export async function registerDelivery(req, res) {
     address: address.trim(),
   });
 
+  await DeliveryPartnerDetail.create({ user: user._id });
+
   res.status(201).json({ user: sanitizeUser(user) });
 }
 
@@ -223,4 +228,93 @@ export async function resetPassword(req, res) {
   await user.save();
 
   res.json({ message: "Password reset successful." });
+}
+
+export async function sendVerificationOtp(req, res) {
+  const { userId } = req.body;
+
+  const user = await User.findById(userId);
+  if (!user) {
+    return res.status(404).json({ message: "User not found." });
+  }
+
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  
+  user.resetOTP = otp;
+  user.resetOTPExpires = Date.now() + 10 * 60 * 1000;
+  await user.save();
+
+  try {
+    await sendEmail(
+      user.email,
+      "Account Verification OTP",
+      `Your OTP for account verification is: ${otp}. It will expire in 10 minutes.`
+    );
+    res.json({ message: "OTP sent to your email." });
+  } catch (error) {
+    res.status(500).json({ message: "Error sending email." });
+  }
+}
+
+export async function changeEmail(req, res) {
+  const { userId, otp, newEmail } = req.body;
+
+  if (!userId || !otp || !newEmail) {
+    return res.status(400).json({ message: "User ID, OTP, and new email are required." });
+  }
+
+  if (!/^\S+@\S+\.\S+$/.test(newEmail)) {
+    return res.status(400).json({ message: "New email must be valid." });
+  }
+
+  const user = await User.findOne({ 
+    _id: userId,
+    resetOTP: otp,
+    resetOTPExpires: { $gt: Date.now() }
+  });
+
+  if (!user) {
+    return res.status(400).json({ message: "Invalid or expired OTP." });
+  }
+
+  const existingEmail = await User.findOne({ email: newEmail.trim().toLowerCase() });
+  if (existingEmail) {
+    return res.status(409).json({ message: "An account with this email already exists." });
+  }
+
+  user.email = newEmail.trim().toLowerCase();
+  user.resetOTP = undefined;
+  user.resetOTPExpires = undefined;
+  await user.save();
+
+  res.json({ message: "Email changed successfully.", user: sanitizeUser(user) });
+}
+
+export async function deleteAccount(req, res) {
+  const { userId, otp } = req.body;
+
+  if (!userId || !otp) {
+    return res.status(400).json({ message: "User ID and OTP are required." });
+  }
+
+  const user = await User.findOne({ 
+    _id: userId,
+    resetOTP: otp,
+    resetOTPExpires: { $gt: Date.now() }
+  });
+
+  if (!user) {
+    return res.status(400).json({ message: "Invalid or expired OTP." });
+  }
+
+  const userItems = await Item.find({ ownerUser: userId });
+  const itemIds = userItems.map(i => i._id);
+  
+  await Item.deleteMany({ ownerUser: userId });
+  await Order.deleteMany({ item: { $in: itemIds } });
+  await Order.deleteMany({ renterUser: userId });
+
+  await User.findByIdAndDelete(userId);
+
+  res.json({ message: "Account deleted successfully." });
 }

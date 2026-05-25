@@ -155,11 +155,13 @@ function buildMenuSections(currentUser) {
       { id: "add-item", label: "Add item" },
       { id: "your-items", label: "Your item" },
       { id: "your-orders", label: "Your order" },
+      { id: "settings", label: "Settings" }
     );
-  }
-
-  if (currentUser?.role === "delivery" || currentUser?.role === "admin") {
-    sections.push({ id: "pickup-delivery", label: roleTheme.pickupLabel });
+  } else if (currentUser?.role === "delivery" || currentUser?.role === "admin") {
+    sections.push(
+      { id: "pickup-delivery", label: roleTheme.pickupLabel },
+      { id: "settings", label: "Settings" }
+    );
   }
 
   sections.push({ id: "help", label: "Help" });
@@ -215,6 +217,11 @@ export default function App() {
   const [showSellerEarningsModal, setShowSellerEarningsModal] = useState(false);
   const [sellerEarningsData, setSellerEarningsData] = useState(null);
   const [adminRequests, setAdminRequests] = useState({ deliveryRequests: [], sellerRequests: [] });
+  const [sellerPaymentMethod, setSellerPaymentMethod] = useState("upi");
+  const [deliveryPaymentMethod, setDeliveryPaymentMethod] = useState("upi");
+  const [settingsOtpMode, setSettingsOtpMode] = useState("");
+  const [settingsOtp, setSettingsOtp] = useState("");
+  const [settingsNewEmail, setSettingsNewEmail] = useState("");
 
   useEffect(() => {
     async function loadData() {
@@ -703,6 +710,66 @@ export default function App() {
     resetAuthForm("login");
     setActiveSection(resolveInitialSection());
     setMessage("Logged out successfully.");
+  }
+
+  async function handleSendSettingsOtp() {
+    try {
+      setSubmitting(true);
+      setMessage("");
+      await api.post("/auth/send-verification-otp", { userId: currentUser._id });
+      setMessage("OTP sent to your current email address.");
+    } catch (error) {
+      setMessage(resolveError(error, "Failed to send OTP."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleSettingsSubmit(event) {
+    event.preventDefault();
+    if (!settingsOtp) {
+      setMessage("OTP is required.");
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      setMessage("");
+
+      if (settingsOtpMode === "email") {
+        if (!/^\S+@\S+\.\S+$/.test(settingsNewEmail)) {
+          setMessage("New email must be valid.");
+          setSubmitting(false);
+          return;
+        }
+
+        const response = await api.post("/auth/change-email", {
+          userId: currentUser._id,
+          otp: settingsOtp,
+          newEmail: settingsNewEmail
+        });
+        
+        setCurrentUser(response.data.user);
+        window.localStorage.setItem("rentera-user", JSON.stringify(response.data.user));
+        setMessage("Email changed successfully.");
+        setSettingsOtpMode("");
+        setSettingsOtp("");
+        setSettingsNewEmail("");
+      } else if (settingsOtpMode === "delete") {
+        await api.post("/auth/delete-account", {
+          userId: currentUser._id,
+          otp: settingsOtp
+        });
+        
+        window.localStorage.removeItem("rentera-user");
+        handleLogout();
+        return;
+      }
+    } catch (error) {
+      setMessage(resolveError(error, "Operation failed."));
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   function beginRent(itemId) {
@@ -2180,10 +2247,22 @@ export default function App() {
                         </div>
                       )}
                       <div className="card-actions">
-                        <button type="button" className="secondary-button" onClick={() => beginEditItem(item)}>
+                        <button 
+                          type="button" 
+                          className="secondary-button" 
+                          onClick={() => beginEditItem(item)}
+                          disabled={item.isAvailable === false}
+                          title={item.isAvailable === false ? "Cannot edit while item is rented" : ""}
+                        >
                           Edit item
                         </button>
-                        <button type="button" className="primary-button" onClick={() => handleDeleteItem(item._id)} disabled={submitting}>
+                        <button 
+                          type="button" 
+                          className="primary-button" 
+                          onClick={() => handleDeleteItem(item._id)} 
+                          disabled={submitting || item.isAvailable === false}
+                          title={item.isAvailable === false ? "Cannot delete while item is rented" : ""}
+                        >
                           Delete item
                         </button>
                       </div>
@@ -2263,23 +2342,37 @@ export default function App() {
                           <strong>Available to Request:</strong> <br/> ₹{sellerEarningsData.amountLeft || 0}
                         </div>
                       </div>
+                      <div style={{ marginBottom: "16px" }}>
+                        <label style={{ marginRight: "16px" }}>
+                          <input type="radio" name="sellerPaymentMethod" value="upi" checked={sellerPaymentMethod === "upi"} onChange={() => setSellerPaymentMethod("upi")} /> UPI ID
+                        </label>
+                        <label>
+                          <input type="radio" name="sellerPaymentMethod" value="bank" checked={sellerPaymentMethod === "bank"} onChange={() => setSellerPaymentMethod("bank")} /> Bank Transfer
+                        </label>
+                      </div>
                       <form onSubmit={handleRequestSellerMoney} style={{ display: "flex", gap: "8px", alignItems: "flex-end", flexWrap: "wrap" }}>
                         <label style={{ flex: "1 1 150px" }}>
                           <span style={{ display: "block", marginBottom: "4px", fontSize: "0.9rem" }}>Request Amount</span>
                           <input type="number" name="requestAmount" max={sellerEarningsData.amountLeft} min="1" disabled={sellerEarningsData.amountLeft <= 0} required style={{ width: "100%", padding: "8px" }} />
                         </label>
-                        <label style={{ flex: "1 1 150px" }}>
-                          <span style={{ display: "block", marginBottom: "4px", fontSize: "0.9rem" }}>UPI ID</span>
-                          <input type="text" name="upiId" style={{ width: "100%", padding: "8px" }} placeholder="Optional" />
-                        </label>
-                        <label style={{ flex: "1 1 150px" }}>
-                          <span style={{ display: "block", marginBottom: "4px", fontSize: "0.9rem" }}>Account No.</span>
-                          <input type="text" name="accountNumber" style={{ width: "100%", padding: "8px" }} placeholder="Optional" />
-                        </label>
-                        <label style={{ flex: "1 1 150px" }}>
-                          <span style={{ display: "block", marginBottom: "4px", fontSize: "0.9rem" }}>IFSC Code</span>
-                          <input type="text" name="ifscCode" style={{ width: "100%", padding: "8px" }} placeholder="Optional" />
-                        </label>
+                        {sellerPaymentMethod === "upi" && (
+                          <label style={{ flex: "1 1 150px" }}>
+                            <span style={{ display: "block", marginBottom: "4px", fontSize: "0.9rem" }}>UPI ID</span>
+                            <input type="text" name="upiId" style={{ width: "100%", padding: "8px" }} placeholder="Enter UPI ID" required />
+                          </label>
+                        )}
+                        {sellerPaymentMethod === "bank" && (
+                          <>
+                            <label style={{ flex: "1 1 150px" }}>
+                              <span style={{ display: "block", marginBottom: "4px", fontSize: "0.9rem" }}>Account No.</span>
+                              <input type="text" name="accountNumber" style={{ width: "100%", padding: "8px" }} placeholder="Account Number" required />
+                            </label>
+                            <label style={{ flex: "1 1 150px" }}>
+                              <span style={{ display: "block", marginBottom: "4px", fontSize: "0.9rem" }}>IFSC Code</span>
+                              <input type="text" name="ifscCode" style={{ width: "100%", padding: "8px" }} placeholder="IFSC Code" required />
+                            </label>
+                          </>
+                        )}
                         <button type="submit" className="primary-button" disabled={submitting || sellerEarningsData.amountLeft <= 0}>
                           Request Money
                         </button>
@@ -2433,23 +2526,37 @@ export default function App() {
                             <strong>Available to Request:</strong> <br/> ₹{earningsData.amountLeft || 0}
                           </div>
                         </div>
+                        <div style={{ marginBottom: "16px" }}>
+                          <label style={{ marginRight: "16px" }}>
+                            <input type="radio" name="deliveryPaymentMethod" value="upi" checked={deliveryPaymentMethod === "upi"} onChange={() => setDeliveryPaymentMethod("upi")} /> UPI ID
+                          </label>
+                          <label>
+                            <input type="radio" name="deliveryPaymentMethod" value="bank" checked={deliveryPaymentMethod === "bank"} onChange={() => setDeliveryPaymentMethod("bank")} /> Bank Transfer
+                          </label>
+                        </div>
                         <form onSubmit={handleRequestMoney} style={{ display: "flex", gap: "8px", alignItems: "flex-end", flexWrap: "wrap" }}>
                           <label style={{ flex: "1 1 150px" }}>
                             <span style={{ display: "block", marginBottom: "4px", fontSize: "0.9rem" }}>Request Amount</span>
                             <input type="number" name="requestAmount" max={earningsData.amountLeft} min="1" disabled={earningsData.amountLeft <= 0} required style={{ width: "100%", padding: "8px" }} />
                           </label>
-                          <label style={{ flex: "1 1 150px" }}>
-                            <span style={{ display: "block", marginBottom: "4px", fontSize: "0.9rem" }}>UPI ID</span>
-                            <input type="text" name="upiId" style={{ width: "100%", padding: "8px" }} placeholder="Optional" />
-                          </label>
-                          <label style={{ flex: "1 1 150px" }}>
-                            <span style={{ display: "block", marginBottom: "4px", fontSize: "0.9rem" }}>Account No.</span>
-                            <input type="text" name="accountNumber" style={{ width: "100%", padding: "8px" }} placeholder="Optional" />
-                          </label>
-                          <label style={{ flex: "1 1 150px" }}>
-                            <span style={{ display: "block", marginBottom: "4px", fontSize: "0.9rem" }}>IFSC Code</span>
-                            <input type="text" name="ifscCode" style={{ width: "100%", padding: "8px" }} placeholder="Optional" />
-                          </label>
+                          {deliveryPaymentMethod === "upi" && (
+                            <label style={{ flex: "1 1 150px" }}>
+                              <span style={{ display: "block", marginBottom: "4px", fontSize: "0.9rem" }}>UPI ID</span>
+                              <input type="text" name="upiId" style={{ width: "100%", padding: "8px" }} placeholder="Enter UPI ID" required />
+                            </label>
+                          )}
+                          {deliveryPaymentMethod === "bank" && (
+                            <>
+                              <label style={{ flex: "1 1 150px" }}>
+                                <span style={{ display: "block", marginBottom: "4px", fontSize: "0.9rem" }}>Account No.</span>
+                                <input type="text" name="accountNumber" style={{ width: "100%", padding: "8px" }} placeholder="Account Number" required />
+                              </label>
+                              <label style={{ flex: "1 1 150px" }}>
+                                <span style={{ display: "block", marginBottom: "4px", fontSize: "0.9rem" }}>IFSC Code</span>
+                                <input type="text" name="ifscCode" style={{ width: "100%", padding: "8px" }} placeholder="IFSC Code" required />
+                              </label>
+                            </>
+                          )}
                           <button type="submit" className="primary-button" disabled={submitting || earningsData.amountLeft <= 0}>
                             Request Money
                           </button>
@@ -2602,6 +2709,77 @@ export default function App() {
                   : "No pickup and delivery orders available."}
               </div>
             )}
+          </section>
+        )}
+
+        {activeSection === "settings" && (
+          <section className="dashboard-section settings-section slide-in">
+            <h2 className="section-title">Account Settings</h2>
+            
+            <div style={{ maxWidth: "500px" }}>
+              {!settingsOtpMode ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+                  <div className="card" style={{ padding: "24px" }}>
+                    <h3>Change Email</h3>
+                    <p style={{ color: "#666", marginBottom: "16px" }}>Update your account email address. This requires OTP verification.</p>
+                    <button className="primary-button" onClick={() => { setSettingsOtpMode("email"); handleSendSettingsOtp(); }}>
+                      Change Email
+                    </button>
+                  </div>
+
+                  <div className="card" style={{ padding: "24px", border: "1px solid #ffcdd2", backgroundColor: "#fff5f5" }}>
+                    <h3 style={{ color: "#d32f2f" }}>Delete Account</h3>
+                    <p style={{ color: "#666", marginBottom: "16px" }}>Permanently delete your account and all associated data.</p>
+                    <button className="primary-button" style={{ backgroundColor: "#d32f2f", color: "white" }} onClick={() => { setSettingsOtpMode("delete"); handleSendSettingsOtp(); }}>
+                      Delete Account
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="card" style={{ padding: "24px" }}>
+                  <h3>{settingsOtpMode === "email" ? "Change Email" : "Delete Account"}</h3>
+                  <form onSubmit={handleSettingsSubmit} className="auth-form" style={{ marginTop: "16px" }}>
+                    {settingsOtpMode === "email" && (
+                      <div className="form-group">
+                        <label>
+                          <span>New Email</span>
+                          <input 
+                            type="email" 
+                            value={settingsNewEmail} 
+                            onChange={(e) => setSettingsNewEmail(e.target.value)} 
+                            placeholder="Enter new email"
+                            required 
+                          />
+                        </label>
+                      </div>
+                    )}
+                    
+                    <div className="form-group">
+                      <label>
+                        <span>Verification OTP</span>
+                        <input 
+                          type="text" 
+                          value={settingsOtp} 
+                          onChange={(e) => setSettingsOtp(e.target.value)} 
+                          placeholder="Enter 6-digit OTP sent to your current email"
+                          maxLength="6"
+                          required 
+                        />
+                      </label>
+                    </div>
+
+                    <div style={{ display: "flex", gap: "12px", marginTop: "24px" }}>
+                      <button type="submit" className="primary-button" disabled={submitting} style={settingsOtpMode === "delete" ? { backgroundColor: "#d32f2f", color: "white" } : {}}>
+                        Confirm
+                      </button>
+                      <button type="button" className="secondary-button" onClick={() => { setSettingsOtpMode(""); setSettingsOtp(""); setSettingsNewEmail(""); }} disabled={submitting}>
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              )}
+            </div>
           </section>
         )}
 
