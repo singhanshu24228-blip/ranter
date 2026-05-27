@@ -510,16 +510,21 @@ export default function App() {
   }
 
   async function handleDeleteItem(itemId) {
-    if (!currentUser || currentUser.role !== "user") {
+    if (!currentUser || (currentUser.role !== "user" && currentUser.role !== "admin")) {
       setActiveSection("auth");
-      setMessage("Only user accounts can manage items.");
+      setMessage("Only user and admin accounts can manage items.");
       return;
     }
 
     try {
       setSubmitting(true);
       setMessage("");
-      await api.delete(`/items/${itemId}`, { params: { ownerUserId: currentUser._id } });
+
+      const params = currentUser.role === "admin"
+        ? { adminId: currentUser._id }
+        : { ownerUserId: currentUser._id };
+
+      await api.delete(`/items/${itemId}`, { params });
       setAllItems((current) => current.filter((item) => item._id !== itemId));
       setCatalogItems((current) => current.filter((item) => item._id !== itemId));
       setOrders((current) => current.filter((order) => order.item?._id !== itemId));
@@ -747,7 +752,7 @@ export default function App() {
           otp: settingsOtp,
           newEmail: settingsNewEmail
         });
-        
+
         setCurrentUser(response.data.user);
         window.localStorage.setItem("rentera-user", JSON.stringify(response.data.user));
         setMessage("Email changed successfully.");
@@ -759,7 +764,7 @@ export default function App() {
           userId: currentUser._id,
           otp: settingsOtp
         });
-        
+
         window.localStorage.removeItem("rentera-user");
         handleLogout();
         return;
@@ -843,7 +848,7 @@ export default function App() {
       payload.append("userId", currentUser._id);
       payload.append("itemId", selectedRentItemId);
       payload.append("address", combinedRentAddress);
-      
+
       Object.entries(rentFormState).forEach(([key, value]) => {
         payload.append(key, value);
       });
@@ -886,9 +891,9 @@ export default function App() {
     if (orderToClaim) {
       const itemAddress = `${orderToClaim.item.address || ''} - ${orderToClaim.item.pinCode || ''}`.trim();
       const renterAddress = `${orderToClaim.renter?.address || ''} - ${orderToClaim.renter?.pinCode || ''}`.trim();
-      
+
       const confirmMessage = `Job Details for ${orderToClaim.item.brandName}\n\n📍 Pickup Address (Seller):\n${itemAddress || 'Not provided'}\n\n📍 Delivery Address (Renter):\n${renterAddress || 'Not provided'}\n\nDo you want to claim this job?`;
-      
+
       const confirmed = window.confirm(confirmMessage);
       if (!confirmed) return;
     }
@@ -959,7 +964,7 @@ export default function App() {
   async function handleDeleteOrder(orderId) {
     if (!currentUser || currentUser.role !== "admin") return;
     if (!window.confirm("Are you sure you want to delete this order? This action cannot be undone.")) return;
-    
+
     try {
       setSubmitting(true);
       setMessage("");
@@ -976,7 +981,7 @@ export default function App() {
   async function handleUserDeleteOrder(orderId) {
     if (!currentUser) return;
     if (!window.confirm("Are you sure you want to delete this order?")) return;
-    
+
     try {
       setSubmitting(true);
       setMessage("");
@@ -1032,8 +1037,8 @@ export default function App() {
       };
 
       const rzp1 = new window.Razorpay(options);
-      rzp1.on('payment.failed', function (response){
-          setMessage("Payment failed. " + response.error.description);
+      rzp1.on('payment.failed', function (response) {
+        setMessage("Payment failed. " + response.error.description);
       });
       rzp1.open();
 
@@ -1065,18 +1070,23 @@ export default function App() {
   }
 
   async function handleUpdateOrderStatus(orderId, nextStatus) {
-    if (!currentUser || currentUser.role !== "delivery") {
-      setMessage("Only delivery partners can update order status.");
+    if (!currentUser || (currentUser.role !== "delivery" && currentUser.role !== "admin")) {
+      setMessage("Only delivery partners and admins can update order status.");
       return;
     }
 
     try {
       setSubmitting(true);
       setMessage("");
-      const response = await api.post(`/orders/${orderId}/update-status`, {
-        deliveryUserId: currentUser._id,
-        nextStatus
-      });
+      
+      const payload = { nextStatus };
+      if (currentUser.role === "admin") {
+        payload.adminId = currentUser._id;
+      } else {
+        payload.deliveryUserId = currentUser._id;
+      }
+      
+      const response = await api.post(`/orders/${orderId}/update-status`, payload);
       const updatedOrder = response.data;
       setDeliveryOrders((current) => current.map((order) => (order._id === updatedOrder._id ? updatedOrder : order)));
 
@@ -1119,7 +1129,7 @@ export default function App() {
     try {
       setSubmitting(true);
       setMessage("");
-      const response = await api.post(`/earnings/${currentUser._id}/request`, { 
+      const response = await api.post(`/earnings/${currentUser._id}/request`, {
         requestAmount: amount,
         upiId,
         accountNumber,
@@ -1160,7 +1170,7 @@ export default function App() {
     try {
       setSubmitting(true);
       setMessage("");
-      const response = await api.post(`/earnings/seller/${currentUser._id}/request`, { 
+      const response = await api.post(`/earnings/seller/${currentUser._id}/request`, {
         requestAmount: amount,
         upiId,
         accountNumber,
@@ -1626,16 +1636,55 @@ export default function App() {
                             <div className="detail-specs">
                             </div>
                             {currentUser && (
-                              <button
-                                className="primary-button rent-now-cta"
-                                onClick={() => {
-                                  setSelectedViewItemId("");
-                                  beginRent(item._id);
-                                }}
-                                disabled={item.isAvailable === false || orderedItemIds.has(item._id)}
-                              >
-                                {orderedItemIds.has(item._id) ? "Already ordered" : item.isAvailable === false ? "Currently Rented" : "Rent now"}
-                              </button>
+                              <div style={{ display: 'flex', gap: '12px', marginTop: '16px', flexWrap: 'wrap' }}>
+                                <button
+                                  className="primary-button rent-now-cta"
+                                  onClick={() => {
+                                    setSelectedViewItemId("");
+                                    beginRent(item._id);
+                                  }}
+                                  disabled={item.isAvailable === false || orderedItemIds.has(item._id)}
+                                >
+                                  {orderedItemIds.has(item._id) ? "Already ordered" : item.isAvailable === false ? "Currently Rented" : "Rent now"}
+                                </button>
+                                {currentUser.role === "admin" && (
+                                  <>
+                                    <button
+                                      className="secondary-button"
+                                      onClick={async () => {
+                                        try {
+                                          setSubmitting(true);
+                                          const response = await api.put(`/items/${item._id}`, { adminId: currentUser._id, isAvailable: !item.isAvailable });
+                                          const updatedItem = response.data;
+                                          setCatalogItems((prev) => prev.map((i) => i._id === item._id ? updatedItem : i));
+                                          setAllItems((prev) => prev.map((i) => i._id === item._id ? updatedItem : i));
+                                          setMessage("Item status updated.");
+                                        } catch (error) {
+                                          setMessage(resolveError(error, "Failed to update item status."));
+                                        } finally {
+                                          setSubmitting(false);
+                                        }
+                                      }}
+                                      disabled={submitting}
+                                    >
+                                      {item.isAvailable ? "Mark Unavailable" : "Mark Available"}
+                                    </button>
+                                    <button
+                                      className="primary-button rent-now-cta"
+                                      style={{ backgroundColor: "#d32f2f", color: "white" }}
+                                      onClick={() => {
+                                        if (window.confirm("Are you sure you want to delete this item?")) {
+                                          setSelectedViewItemId("");
+                                          handleDeleteItem(item._id);
+                                        }
+                                      }}
+                                      disabled={submitting}
+                                    >
+                                      Delete Item
+                                    </button>
+                                  </>
+                                )}
+                              </div>
                             )}
                           </div>
                         </div>
@@ -1743,7 +1792,7 @@ export default function App() {
                               </div>
                               <h4>{item.brandName}</h4>
                               <p className="description">{item.productDescription}</p>
-                              <div className="card-actions">
+                              <div className="card-actions" style={{ flexWrap: "wrap", gap: "8px" }}>
                                 {currentUser && (
                                   <button
                                     className="primary-button"
@@ -1755,6 +1804,44 @@ export default function App() {
                                   >
                                     {orderedItemIds.has(item._id) ? "Already ordered" : item.isAvailable === false ? "Currently Rented" : "Rent now"}
                                   </button>
+                                )}
+                                {currentUser?.role === "admin" && (
+                                  <>
+                                    <button
+                                      className="secondary-button"
+                                      onClick={async (e) => {
+                                        e.stopPropagation();
+                                        try {
+                                          setSubmitting(true);
+                                          const response = await api.put(`/items/${item._id}`, { adminId: currentUser._id, isAvailable: !item.isAvailable });
+                                          const updatedItem = response.data;
+                                          setCatalogItems((prev) => prev.map((i) => i._id === item._id ? updatedItem : i));
+                                          setAllItems((prev) => prev.map((i) => i._id === item._id ? updatedItem : i));
+                                          setMessage("Item status updated.");
+                                        } catch (error) {
+                                          setMessage(resolveError(error, "Failed to update item status."));
+                                        } finally {
+                                          setSubmitting(false);
+                                        }
+                                      }}
+                                      disabled={submitting}
+                                    >
+                                      {item.isAvailable ? "Mark Unavailable" : "Mark Available"}
+                                    </button>
+                                    <button
+                                      className="primary-button"
+                                      style={{ backgroundColor: "#d32f2f", color: "white" }}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (window.confirm("Are you sure you want to delete this item?")) {
+                                          handleDeleteItem(item._id);
+                                        }
+                                      }}
+                                      disabled={submitting}
+                                    >
+                                      Delete Item
+                                    </button>
+                                  </>
                                 )}
                               </div>
                             </div>
@@ -2036,7 +2123,7 @@ export default function App() {
                       <h3>Payout Requests</h3>
                     </div>
                   </div>
-                  
+
                   <div className="card-grid">
                     {adminRequests.sellerRequests.length > 0 || adminRequests.deliveryRequests.length > 0 ? (
                       <>
@@ -2260,19 +2347,19 @@ export default function App() {
                         </div>
                       )}
                       <div className="card-actions">
-                        <button 
-                          type="button" 
-                          className="secondary-button" 
+                        <button
+                          type="button"
+                          className="secondary-button"
                           onClick={() => beginEditItem(item)}
                           disabled={item.isAvailable === false}
                           title={item.isAvailable === false ? "Cannot edit while item is rented" : ""}
                         >
                           Edit item
                         </button>
-                        <button 
-                          type="button" 
-                          className="primary-button" 
-                          onClick={() => handleDeleteItem(item._id)} 
+                        <button
+                          type="button"
+                          className="primary-button"
+                          onClick={() => handleDeleteItem(item._id)}
                           disabled={submitting || item.isAvailable === false}
                           title={item.isAvailable === false ? "Cannot delete while item is rented" : ""}
                         >
@@ -2341,18 +2428,18 @@ export default function App() {
                 <div className="panel" style={{ marginTop: "16px", backgroundColor: "#f9f9f9", border: "1px solid #ddd" }}>
                   <h4>Seller Earnings</h4>
                   <p style={{ fontSize: "0.9rem", color: "#666", marginBottom: "16px" }}>90% of rent amount will add after complete delivery</p>
-                  
+
                   {sellerEarningsData ? (
                     <div>
                       <div style={{ display: "flex", flexWrap: "wrap", gap: "24px", marginBottom: "16px" }}>
                         <div>
-                          <strong>Total Earned:</strong> <br/> ₹{sellerEarningsData.totalAmount || 0}
+                          <strong>Total Earned:</strong> <br /> ₹{sellerEarningsData.totalAmount || 0}
                         </div>
                         <div>
-                          <strong>Requested:</strong> <br/> ₹{sellerEarningsData.amountRequested || 0}
+                          <strong>Requested:</strong> <br /> ₹{sellerEarningsData.amountRequested || 0}
                         </div>
                         <div>
-                          <strong>Available to Request:</strong> <br/> ₹{sellerEarningsData.amountLeft || 0}
+                          <strong>Available to Request:</strong> <br /> ₹{sellerEarningsData.amountLeft || 0}
                         </div>
                       </div>
                       <div style={{ marginBottom: "16px" }}>
@@ -2506,8 +2593,8 @@ export default function App() {
                     <strong>/pickup_delivery</strong>
                     <span>Your delivery route page</span>
                   </article>
-                  <article 
-                    style={{ cursor: "pointer", position: "relative" }} 
+                  <article
+                    style={{ cursor: "pointer", position: "relative" }}
                     onClick={() => {
                       if (!showEarningsModal) fetchEarnings();
                       setShowEarningsModal(!showEarningsModal);
@@ -2523,18 +2610,18 @@ export default function App() {
                   <div className="panel" style={{ marginTop: "16px", backgroundColor: "#f9f9f9", border: "1px solid #ddd" }}>
                     <h4>Earnings Dashboard</h4>
                     <p style={{ fontSize: "0.9rem", color: "#666", marginBottom: "16px" }}>90% of delivery amount will add after complete delivery</p>
-                    
+
                     {earningsData ? (
                       <div>
                         <div style={{ display: "flex", gap: "24px", marginBottom: "16px" }}>
                           <div>
-                            <strong>Total Earned:</strong> <br/> ₹{earningsData.totalAmount || 0}
+                            <strong>Total Earned:</strong> <br /> ₹{earningsData.totalAmount || 0}
                           </div>
                           <div>
-                            <strong>Requested:</strong> <br/> ₹{earningsData.amountRequested || 0}
+                            <strong>Requested:</strong> <br /> ₹{earningsData.amountRequested || 0}
                           </div>
                           <div>
-                            <strong>Available to Request:</strong> <br/> ₹{earningsData.amountLeft || 0}
+                            <strong>Available to Request:</strong> <br /> ₹{earningsData.amountLeft || 0}
                           </div>
                         </div>
                         <div style={{ marginBottom: "16px" }}>
@@ -2604,6 +2691,7 @@ export default function App() {
               <div className="card-grid">
                 {pickupDeliveryList.map((order) => {
                   const isAssignedToCurrentUser = order.deliveryPartner?._id === currentUser?._id;
+                  const canChangeStatus = isAssignedToCurrentUser || currentUser?.role === "admin";
                   const isAvailable = !order.deliveryPartner;
                   const isCompleted = order.status === "Delivered";
                   const seller = order.item.ownerUser;
@@ -2647,7 +2735,10 @@ export default function App() {
                               return end.toLocaleDateString();
                             })()}
                           </span>
-                          <span>Delivery partner: {order.deliveryPartner?.username || "Not assigned yet"}</span>
+                          <span>
+                            Delivery partner: {order.deliveryPartner?.username || "Not assigned yet"}
+                            {currentUser?.role === "admin" && order.deliveryPartner?.phoneNumber && ` (📞 ${order.deliveryPartner.phoneNumber})`}
+                          </span>
                           {(currentUser?.role === "admin" || currentUser?.role === "delivery") && (
                             <span style={{ fontWeight: "bold", marginTop: "4px", display: "block" }}>
                               Delivery charge: ₹{order.deliveryCharge || 0}
@@ -2659,7 +2750,7 @@ export default function App() {
                             <input
                               type="checkbox"
                               checked={!!order.pickedUpFromSellerAt}
-                              disabled={!isAssignedToCurrentUser || !!order.pickedUpFromSellerAt || submitting}
+                              disabled={!canChangeStatus || !!order.pickedUpFromSellerAt || submitting}
                               onChange={() => handleUpdateOrderStatus(order._id, "PickedUpFromSeller")}
                             />
                             <span>1. Pickup from Seller</span>
@@ -2668,7 +2759,7 @@ export default function App() {
                             <input
                               type="checkbox"
                               checked={!!order.deliveredToRenterAt}
-                              disabled={!isAssignedToCurrentUser || !order.pickedUpFromSellerAt || !!order.deliveredToRenterAt || submitting}
+                              disabled={!canChangeStatus || !order.pickedUpFromSellerAt || !!order.deliveredToRenterAt || submitting}
                               onChange={() => handleUpdateOrderStatus(order._id, "DeliveredToRenter")}
                             />
                             <span>2. Delivery to Renter</span>
@@ -2677,7 +2768,7 @@ export default function App() {
                             <input
                               type="checkbox"
                               checked={!!order.pickedUpFromRenterAt}
-                              disabled={!isAssignedToCurrentUser || !order.deliveredToRenterAt || !!order.pickedUpFromRenterAt || submitting}
+                              disabled={!canChangeStatus || !order.deliveredToRenterAt || !!order.pickedUpFromRenterAt || submitting}
                               onChange={() => handleUpdateOrderStatus(order._id, "PickedUpFromRenter")}
                             />
                             <span>3. Pickup from Renter</span>
@@ -2686,7 +2777,7 @@ export default function App() {
                             <input
                               type="checkbox"
                               checked={!!order.returnedToSellerAt}
-                              disabled={!isAssignedToCurrentUser || !order.pickedUpFromRenterAt || !!order.returnedToSellerAt || submitting}
+                              disabled={!canChangeStatus || !order.pickedUpFromRenterAt || !!order.returnedToSellerAt || submitting}
                               onChange={() => handleUpdateOrderStatus(order._id, "ReturnedToSeller")}
                             />
                             <span>4. Return to Owner</span>
@@ -2734,7 +2825,7 @@ export default function App() {
         {activeSection === "settings" && (
           <section className="dashboard-section settings-section slide-in">
             <h2 className="section-title">Account Settings</h2>
-            
+
             <div style={{ maxWidth: "500px" }}>
               {!settingsOtpMode ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
@@ -2762,27 +2853,27 @@ export default function App() {
                       <div className="form-group">
                         <label>
                           <span>New Email</span>
-                          <input 
-                            type="email" 
-                            value={settingsNewEmail} 
-                            onChange={(e) => setSettingsNewEmail(e.target.value)} 
+                          <input
+                            type="email"
+                            value={settingsNewEmail}
+                            onChange={(e) => setSettingsNewEmail(e.target.value)}
                             placeholder="Enter new email"
-                            required 
+                            required
                           />
                         </label>
                       </div>
                     )}
-                    
+
                     <div className="form-group">
                       <label>
                         <span>Verification OTP</span>
-                        <input 
-                          type="text" 
-                          value={settingsOtp} 
-                          onChange={(e) => setSettingsOtp(e.target.value)} 
+                        <input
+                          type="text"
+                          value={settingsOtp}
+                          onChange={(e) => setSettingsOtp(e.target.value)}
                           placeholder="Enter 6-digit OTP sent to your current email"
                           maxLength="6"
-                          required 
+                          required
                         />
                       </label>
                     </div>
@@ -2813,16 +2904,22 @@ export default function App() {
 
             <div className="help-grid">
               <article>
-                <h4>How to add an item</h4>
-                <p>Open Add item, upload your main image, choose a category, fill rental details, and publish.</p>
-              </article>
-              <article>
-                <h4>How to rent</h4>
-                <p>Browse the home section, filter with category, and click Rent now on any product card with a user account.</p>
-              </article>
-              <article>
-                <h4>Pickup delivery page</h4>
-                <p>Delivery partners can open /pickup_delivery and click + to claim an available rental delivery.</p>
+                <h4>How it works</h4>
+                <p>This is platform where you can rent item of other user.</p>
+                <p>Click on marketplace to see all item listed.</p>
+                <p>You can see item based on category.</p>
+                <p>You can also see item is avalilable for rent or not</p>
+                <p>You can add item on click "Add item".</p>
+                <p>Only <b>verified user</b> can rent your item.</p>
+                <p>you can contact us between <b>10:00 am - 10:00 pm</b>.</p>
+                <h4>Contact Us</h4>
+                <p>
+                  For any support or inquiries, please contact us at:<br />
+                  📞 6205915327<br />
+                  ✉️ singhanshu24228@gmail.com
+
+                </p>
+                <p></p>
               </article>
             </div>
           </section>

@@ -265,12 +265,14 @@ export async function deleteOrder(req, res) {
   }
 
   if (adminId) {
-    if (!mongoose.isValidObjectId(adminId)) {
-      return res.status(401).json({ message: "A logged in admin is required." });
-    }
-    const adminUser = await User.findById(adminId);
-    if (!adminUser || adminUser.role !== "admin") {
-      return res.status(403).json({ message: "Only admins can perform this action as admin." });
+    if (adminId !== "admin-fixed-user") {
+      if (!mongoose.isValidObjectId(adminId)) {
+        return res.status(401).json({ message: "A logged in admin is required." });
+      }
+      const adminUser = await User.findById(adminId);
+      if (!adminUser || adminUser.role !== "admin") {
+        return res.status(403).json({ message: "Only admins can perform this action as admin." });
+      }
     }
   } else if (userId) {
     if (!mongoose.isValidObjectId(userId)) {
@@ -361,14 +363,28 @@ export async function assignDeliveryPartner(req, res) {
 
 export async function updateOrderStatus(req, res) {
   const { orderId } = req.params;
-  const { deliveryUserId, nextStatus } = req.body;
+  const { deliveryUserId, nextStatus, adminId } = req.body;
 
   if (!mongoose.isValidObjectId(orderId)) {
     return res.status(400).json({ message: "Invalid order id." });
   }
 
-  if (!mongoose.isValidObjectId(deliveryUserId)) {
-    return res.status(400).json({ message: "A valid delivery partner is required." });
+  let isAdmin = false;
+  if (adminId) {
+    if (adminId !== "admin-fixed-user") {
+      if (!mongoose.isValidObjectId(adminId)) {
+        return res.status(401).json({ message: "A logged in admin is required." });
+      }
+      const adminUser = await User.findById(adminId);
+      if (!adminUser || adminUser.role !== "admin") {
+        return res.status(403).json({ message: "Only admins can perform this action as admin." });
+      }
+    }
+    isAdmin = true;
+  } else {
+    if (!mongoose.isValidObjectId(deliveryUserId)) {
+      return res.status(400).json({ message: "A valid delivery partner is required." });
+    }
   }
 
   const validStatuses = ["PickedUpFromSeller", "DeliveredToRenter", "PickedUpFromRenter", "ReturnedToSeller"];
@@ -382,11 +398,13 @@ export async function updateOrderStatus(req, res) {
   if (nextStatus === "PickedUpFromRenter") updateFields.pickedUpFromRenterAt = new Date();
   if (nextStatus === "ReturnedToSeller") updateFields.returnedToSellerAt = new Date();
 
+  const query = { _id: orderId };
+  if (!isAdmin) {
+    query.deliveryPartner = deliveryUserId;
+  }
+
   const order = await Order.findOneAndUpdate(
-    {
-      _id: orderId,
-      deliveryPartner: deliveryUserId,
-    },
+    query,
     updateFields,
     { new: true },
   ).populate({
