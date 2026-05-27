@@ -1624,9 +1624,6 @@ export default function App() {
                             <h2>{item.brandName}</h2>
                             <p className="description">{item.productDescription}</p>
                             <div className="detail-specs">
-                              <div><strong>Location:</strong> {item.address}</div>
-                              <div><strong>Pin Code:</strong> {item.pinCode}</div>
-                              <div><strong>Owner Contact:</strong> {item.phoneNumber}</div>
                             </div>
                             {currentUser && (
                               <button
@@ -1719,7 +1716,7 @@ export default function App() {
                           </label>
                           <label>
                             <span>No. of days for rent</span>
-                            <input type="number" name="rentalDays" value={rentFormState.rentalDays} onChange={handleRentInputChange} min="1" placeholder="3" required />
+                            <input type="number" name="rentalDays" value={rentFormState.rentalDays} onChange={handleRentInputChange} min="1" max="7" placeholder="3" required />
                           </label>
                         </div>
 
@@ -2421,8 +2418,6 @@ export default function App() {
                           <span>Rent cost: Rs {order.item.rentCost}/day</span>
                           {orderView === "you-rent" ? (
                             <>
-                              <span>Owner: {order.item.ownerUser?.username || "Unknown"}</span>
-                              <span>Pickup: {order.item.address}</span>
                               <span>Delivery to: {order.renter?.address || "Not available"}</span>
                               <span>Rental days: {order.renter?.rentalDays || "Not available"}</span>
                             </>
@@ -2643,7 +2638,15 @@ export default function App() {
                               </div>
                             )}
                           </div>
-                          <span>Rental days: {order.renter?.rentalDays || "Not available"}</span>
+                          <span>
+                            Rented till: {(() => {
+                              const days = order.renter?.rentalDays || 0;
+                              if (!days) return "Not available";
+                              const start = order.deliveredToRenterAt ? new Date(order.deliveredToRenterAt) : new Date(order.createdAt);
+                              const end = new Date(start.getTime() + days * 24 * 60 * 60 * 1000);
+                              return end.toLocaleDateString();
+                            })()}
+                          </span>
                           <span>Delivery partner: {order.deliveryPartner?.username || "Not assigned yet"}</span>
                           {(currentUser?.role === "admin" || currentUser?.role === "delivery") && (
                             <span style={{ fontWeight: "bold", marginTop: "4px", display: "block" }}>

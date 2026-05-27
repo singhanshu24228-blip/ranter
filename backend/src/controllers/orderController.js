@@ -82,6 +82,9 @@ export async function createOrder(req, res) {
   if (!Number.isInteger(parsedRentalDays) || parsedRentalDays < 1) {
     return res.status(400).json({ message: "Number of rental days must be at least 1." });
   }
+  if (parsedRentalDays > 7) {
+    return res.status(400).json({ message: "Number of rental days cannot exceed 7." });
+  }
 
   const item = await Item.findById(itemId);
   if (!item) {
@@ -118,7 +121,27 @@ export async function createOrder(req, res) {
   
   await Item.findByIdAndUpdate(itemId, { isAvailable: false });
 
-  const populatedOrder = await order.populate(["item", "renterUser", "deliveryPartner"]);
+  const populatedOrder = await order.populate({
+    path: "item",
+    populate: { path: "ownerUser" },
+  });
+  await populatedOrder.populate("renterUser deliveryPartner");
+
+  try {
+    if (populatedOrder.item?.ownerUser?.email) {
+      const renterAddress = populatedOrder.renter?.address || "Not provided";
+      const renterPhone = populatedOrder.renter?.phoneNumber || "Not provided";
+      const renterPinCode = populatedOrder.renter?.pinCode || "Not provided";
+      const renterName = populatedOrder.renterUser?.username || "Unknown";
+      
+      const sellerMessage = `Hello ${populatedOrder.item.ownerUser.username},\n\nYour product ${populatedOrder.item.brandName} has just been rented for ${populatedOrder.renter.rentalDays} days.\n\nRenter Details:\nName: ${renterName}\nPhone: ${renterPhone}\nAddress: ${renterAddress}\nPincode: ${renterPinCode}\n\nPlease keep the product ready. A delivery partner will be assigned soon.`;
+      
+      sendEmail(populatedOrder.item.ownerUser.email, "Your Product has been Rented", sellerMessage).catch(console.error);
+    }
+  } catch (error) {
+    console.error("Failed to send notification email to owner:", error);
+  }
+
   res.status(201).json(populatedOrder);
 }
 
@@ -140,13 +163,33 @@ export async function getOrders(req, res) {
     ];
   }
 
-  const orders = await Order.find(query)
+  let orders = await Order.find(query)
     .populate({
       path: "item",
       populate: { path: "ownerUser" },
     })
     .populate("renterUser deliveryPartner")
     .sort({ createdAt: -1 });
+
+  if (view !== "pickup_delivery" && mongoose.isValidObjectId(userId)) {
+    orders = orders.map(order => {
+      const obj = order.toObject();
+      const isOwner = obj.item?.ownerUser?._id?.toString() === userId;
+      
+      if (!isOwner) {
+        if (obj.item) {
+          delete obj.item.address;
+          delete obj.item.pinCode;
+          delete obj.item.phoneNumber;
+          if (obj.item.ownerUser) {
+            delete obj.item.ownerUser;
+          }
+        }
+      }
+      return obj;
+    });
+  }
+
   res.json(orders);
 }
 
@@ -301,8 +344,13 @@ export async function assignDeliveryPartner(req, res) {
     }
 
     if (order.item?.ownerUser?.email) {
-      const sellerMessage = `Your product ${order.item.brandName} has been rented.\n\nKeep your product ready it has been rented.\n\nDelivery Partner Phone: ${order.deliveryPartner.phoneNumber}`;
-      sendEmail(order.item.ownerUser.email, "Your Product has been Rented", sellerMessage).catch(console.error);
+      const renterAddress = order.renter?.address || "Not provided";
+      const renterPhone = order.renter?.phoneNumber || "Not provided";
+      const renterPinCode = order.renter?.pinCode || "Not provided";
+      const renterName = order.renterUser?.username || "Unknown";
+
+      const sellerMessage = `Your product ${order.item.brandName} has been assigned a delivery partner.\n\nKeep your product ready for pickup.\n\nDelivery Partner Phone: ${order.deliveryPartner.phoneNumber}\n\nRenter Details:\nName: ${renterName}\nPhone: ${renterPhone}\nAddress: ${renterAddress}\nPincode: ${renterPinCode}`;
+      sendEmail(order.item.ownerUser.email, "Delivery Partner Assigned for your Product", sellerMessage).catch(console.error);
     }
   } catch (error) {
     console.error("Failed to send notification emails:", error);

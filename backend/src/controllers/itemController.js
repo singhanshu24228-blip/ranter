@@ -112,7 +112,18 @@ export async function getItems(req, res) {
     query.isAvailable = false;
   }
 
-  const items = await Item.find(query).sort({ createdAt: -1 });
+  let items = await Item.find(query).sort({ createdAt: -1 });
+  
+  if (!ownerUserId) {
+    items = items.map(item => {
+      const obj = item.toObject();
+      delete obj.address;
+      delete obj.pinCode;
+      delete obj.phoneNumber;
+      return obj;
+    });
+  }
+
   res.json(items);
 }
 
