@@ -58,7 +58,6 @@ const restrictedSections = ["add-item", "your-items", "your-orders", "pickup-del
 const roleThemes = {
   guest: {
     shellClass: "role-guest",
-    eyebrow: "Trusted local renting",
     title: "rentera",
     subtitle: "Marketplace access",
     homeLabel: "Home",
@@ -75,7 +74,6 @@ const roleThemes = {
   },
   delivery: {
     shellClass: "role-delivery",
-    eyebrow: "Field operations console",
     title: "rentera",
     subtitle: "Assigned jobs and route tracking",
     homeLabel: "Delivery Desk",
@@ -222,6 +220,7 @@ export default function App() {
   const [settingsOtpMode, setSettingsOtpMode] = useState("");
   const [settingsOtp, setSettingsOtp] = useState("");
   const [settingsNewEmail, setSettingsNewEmail] = useState("");
+  const [isLocationFormVisible, setIsLocationFormVisible] = useState(false);
 
   useEffect(() => {
     async function loadData() {
@@ -883,6 +882,17 @@ export default function App() {
       return;
     }
 
+    const orderToClaim = deliveryOrders.find(o => o.item?._id === itemId);
+    if (orderToClaim) {
+      const itemAddress = `${orderToClaim.item.address || ''} - ${orderToClaim.item.pinCode || ''}`.trim();
+      const renterAddress = `${orderToClaim.renter?.address || ''} - ${orderToClaim.renter?.pinCode || ''}`.trim();
+      
+      const confirmMessage = `Job Details for ${orderToClaim.item.brandName}\n\n📍 Pickup Address (Seller):\n${itemAddress || 'Not provided'}\n\n📍 Delivery Address (Renter):\n${renterAddress || 'Not provided'}\n\nDo you want to claim this job?`;
+      
+      const confirmed = window.confirm(confirmMessage);
+      if (!confirmed) return;
+    }
+
     try {
       setSubmitting(true);
       setMessage("");
@@ -1236,7 +1246,7 @@ export default function App() {
             {currentUser ? currentUser.username[0].toUpperCase() : "R"}
           </div>
           <div>
-            <p className="eyebrow">{roleTheme.eyebrow}</p>
+            {roleTheme.eyebrow && <p className="eyebrow">{roleTheme.eyebrow}</p>}
             <h1>{roleTheme.title}</h1>
           </div>
         </div>
@@ -1765,11 +1775,7 @@ export default function App() {
             {currentUser?.role === "delivery" && (
               <>
                 <section className="hero-card delivery-hero">
-                  <div className="hero-copy">
-                    <p className="eyebrow">Delivery operations</p>
-                    <h2>Focus on active routes, claimed handoffs, and completed drop-offs.</h2>
-                    <p>This dashboard is only for delivery partners. Open the route queue to claim jobs and update delivery status.</p>
-                  </div>
+
                   <div className="hero-stat-grid">
                     <article>
                       <strong>{incompleteDeliveryOrders.length}</strong>
@@ -1795,11 +1801,6 @@ export default function App() {
                       Go to /pickup_delivery
                     </button>
                   </article>
-                  <article className="role-focus-card">
-                    <p className="eyebrow">Marketplace status</p>
-                    <h3>Claim from desk</h3>
-                    <p>You can now claim available pickup jobs directly from the product list below.</p>
-                  </article>
                 </section>
 
                 <section className="panel" style={{ marginTop: "32px" }}>
@@ -1808,7 +1809,7 @@ export default function App() {
                       <p className="eyebrow">Available for pickup</p>
                       <h3>Delivery Desk</h3>
                     </div>
-                    <p className="section-note">Showing up to 10 latest marketplace items. Click + to claim unassigned jobs.</p>
+
                   </div>
 
                   {loading ? (
@@ -1828,7 +1829,7 @@ export default function App() {
                           if (!item) return null;
 
                           return (
-                            <article key={item._id} className="product-card">
+                            <article key={item._id} className="product-card" onClick={() => handleClaimItemDelivery(item._id)} style={{ cursor: "pointer" }}>
                               <img src={item.media.mainImage} alt={item.brandName} />
                               <div className="card-body">
                                 <div className="meta-row">
@@ -1844,7 +1845,10 @@ export default function App() {
                                 <div className="card-actions">
                                   <button
                                     className="pickup-add-button"
-                                    onClick={() => handleClaimItemDelivery(item._id)}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleClaimItemDelivery(item._id);
+                                    }}
                                     disabled={submitting}
                                     title="Claim job"
                                   >
@@ -1871,44 +1875,56 @@ export default function App() {
                       <h3>Update your location</h3>
                     </div>
                   </div>
-                  <form className="item-form" onSubmit={handleUpdateLocation}>
-                    <p className="section-note" style={{ marginBottom: "16px" }}>Current: {currentUser.address}</p>
-                    <div className="form-grid">
-                      <label>
-                        <span>Building no.</span>
-                        <input type="text" name="buildingNo" value={authFormState.buildingNo} onChange={handleAuthInputChange} placeholder="123/A" required />
-                      </label>
-                      <label>
-                        <span>Landmark</span>
-                        <input type="text" name="landmark" value={authFormState.landmark} onChange={handleAuthInputChange} placeholder="Near market" />
-                      </label>
-                      <label>
-                        <span>Street</span>
-                        <input type="text" name="street" value={authFormState.street} onChange={handleAuthInputChange} placeholder="MG Road" required />
-                      </label>
-                      <label>
-                        <span>Village</span>
-                        <input type="text" name="village" value={authFormState.village} onChange={handleAuthInputChange} placeholder="Village name" />
-                      </label>
-                      <label>
-                        <span>City</span>
-                        <input type="text" name="city" value={authFormState.city} onChange={handleAuthInputChange} placeholder="City" required />
-                      </label>
-                      <label>
-                        <span>District</span>
-                        <input type="text" name="district" value={authFormState.district} onChange={handleAuthInputChange} placeholder="District" />
-                      </label>
-                      <label>
-                        <span>State</span>
-                        <input type="text" name="state" value={authFormState.state} onChange={handleAuthInputChange} placeholder="State" required />
-                      </label>
-                    </div>
-                    <div className="form-actions">
-                      <button type="submit" className="primary-button" disabled={submitting}>
-                        {submitting ? "Updating..." : "Update location detail"}
+                  {!isLocationFormVisible ? (
+                    <div style={{ marginTop: "16px" }}>
+                      <p className="section-note" style={{ marginBottom: "16px" }}>Current: {currentUser.address}</p>
+                      <button type="button" className="secondary-button" onClick={() => setIsLocationFormVisible(true)}>
+                        Update location
                       </button>
                     </div>
-                  </form>
+                  ) : (
+                    <form className="item-form" onSubmit={handleUpdateLocation}>
+                      <p className="section-note" style={{ marginBottom: "16px" }}>Current: {currentUser.address}</p>
+                      <div className="form-grid">
+                        <label>
+                          <span>Building no.</span>
+                          <input type="text" name="buildingNo" value={authFormState.buildingNo} onChange={handleAuthInputChange} placeholder="123/A" required />
+                        </label>
+                        <label>
+                          <span>Landmark</span>
+                          <input type="text" name="landmark" value={authFormState.landmark} onChange={handleAuthInputChange} placeholder="Near market" />
+                        </label>
+                        <label>
+                          <span>Street</span>
+                          <input type="text" name="street" value={authFormState.street} onChange={handleAuthInputChange} placeholder="MG Road" required />
+                        </label>
+                        <label>
+                          <span>Village</span>
+                          <input type="text" name="village" value={authFormState.village} onChange={handleAuthInputChange} placeholder="Village name" />
+                        </label>
+                        <label>
+                          <span>City</span>
+                          <input type="text" name="city" value={authFormState.city} onChange={handleAuthInputChange} placeholder="City" required />
+                        </label>
+                        <label>
+                          <span>District</span>
+                          <input type="text" name="district" value={authFormState.district} onChange={handleAuthInputChange} placeholder="District" />
+                        </label>
+                        <label>
+                          <span>State</span>
+                          <input type="text" name="state" value={authFormState.state} onChange={handleAuthInputChange} placeholder="State" required />
+                        </label>
+                      </div>
+                      <div className="form-actions" style={{ display: "flex", gap: "12px" }}>
+                        <button type="submit" className="primary-button" disabled={submitting}>
+                          {submitting ? "Updating..." : "Update location detail"}
+                        </button>
+                        <button type="button" className="secondary-button" onClick={() => setIsLocationFormVisible(false)} disabled={submitting}>
+                          Cancel
+                        </button>
+                      </div>
+                    </form>
+                  )}
                 </section>
               </>
             )}
