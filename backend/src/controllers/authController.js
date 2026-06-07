@@ -18,10 +18,14 @@ function sanitizeUser(user) {
 }
 
 export async function registerUser(req, res) {
-  const { username, email, phoneNumber, password, role, address } = req.body;
+  const { username, email, phoneNumber, password, role, address, acceptedTerms } = req.body;
   
   if (role === "delivery") {
     return res.status(403).json({ message: "Delivery accounts can only be created by an administrator." });
+  }
+
+  if (acceptedTerms !== true) {
+    return res.status(400).json({ message: "You must accept the Terms & Conditions and Privacy Policy." });
   }
 
   const normalizedRole = "user";
@@ -59,6 +63,8 @@ export async function registerUser(req, res) {
     phoneNumber,
     passwordHash: hashPassword(password),
     role: normalizedRole,
+    acceptedTerms: true,
+    acceptedTermsAt: new Date(),
     address: normalizedRole === "delivery" ? address.trim() : "",
   });
 

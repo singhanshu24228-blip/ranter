@@ -31,6 +31,14 @@ const userSchema = new mongoose.Schema(
       default: "user",
       required: true,
     },
+    acceptedTerms: {
+      type: Boolean,
+      required: true,
+      default: false,
+    },
+    acceptedTermsAt: {
+      type: Date,
+    },
     address: {
       type: String,
       trim: true,

@@ -463,6 +463,44 @@ a {
   box-shadow: var(--shadow-lg);
 }
 
+.checkbox-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 12px;
+  font-size: 0.95rem;
+  color: var(--text);
+}
+
+.checkbox-field input[type="checkbox"] {
+  margin-top: 3px;
+  width: 18px;
+  height: 18px;
+}
+
+.checkbox-field .link-button {
+  border: none;
+  background: none;
+  color: var(--brand);
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+  margin: 0 4px;
+}
+
+.legal-content {
+  display: grid;
+  gap: 16px;
+  color: var(--text);
+  line-height: 1.75;
+  max-width: 860px;
+}
+
+.legal-content p {
+  margin: 0;
+}
+
 .product-card img,
 .info-card img {
   width: 100%;
@@ -611,6 +649,180 @@ a {
 .profile-card {
   display: grid;
   gap: 20px;
+}
+
+.auth-panel {
+  padding: 30px;
+  overflow: hidden;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.62)),
+    linear-gradient(135deg, rgba(16, 185, 129, 0.12), rgba(245, 158, 11, 0.1));
+}
+
+.auth-heading {
+  align-items: flex-start;
+}
+
+.auth-heading h3 {
+  font-size: clamp(1.6rem, 2.4vw, 2.5rem);
+  line-height: 1.05;
+  max-width: 620px;
+}
+
+.auth-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.82fr) minmax(360px, 1fr);
+  gap: 28px;
+  align-items: stretch;
+}
+
+.auth-copy,
+.auth-form,
+.auth-profile-card {
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: var(--shadow-sm);
+}
+
+.auth-copy {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 28px;
+  min-height: 460px;
+  border-radius: 22px;
+  padding: 28px;
+}
+
+.auth-kicker {
+  width: fit-content;
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: rgba(16, 185, 129, 0.12);
+  color: #047857;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.auth-copy h4 {
+  margin: auto 0 0;
+  max-width: 420px;
+  color: var(--text);
+  font-family: "Space Grotesk", sans-serif;
+  font-size: clamp(1.7rem, 2.3vw, 2.45rem);
+  line-height: 1.05;
+}
+
+.auth-benefits {
+  display: grid;
+  gap: 10px;
+}
+
+.auth-benefits span {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-weight: 650;
+}
+
+.auth-benefits span::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  flex: 0 0 9px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.14);
+}
+
+.auth-form {
+  gap: 20px;
+  border-radius: 22px;
+  padding: 24px;
+}
+
+.auth-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(233, 239, 249, 0.72);
+}
+
+.auth-mode-tabs {
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.auth-tab {
+  min-height: 44px;
+  border: 0;
+  border-radius: 13px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-weight: 750;
+  transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.auth-tab:hover,
+.auth-tab.is-active {
+  background: #fff;
+  color: var(--brand-deep);
+  box-shadow: var(--shadow-sm);
+}
+
+.auth-tab.is-active {
+  transform: translateY(-1px);
+}
+
+.auth-form-grid {
+  gap: 16px;
+}
+
+.auth-form-grid label span {
+  color: #475569;
+  font-weight: 700;
+}
+
+.auth-form-grid input {
+  min-height: 48px;
+}
+
+.auth-submit-row {
+  align-items: stretch;
+}
+
+.auth-submit-row .primary-button {
+  width: 100%;
+  min-height: 50px;
+}
+
+.auth-helper-row {
+  display: flex;
+  justify-content: center;
+}
+
+.auth-text-button {
+  border: 0;
+  background: transparent;
+  color: var(--brand-deep);
+  cursor: pointer;
+  font-weight: 750;
+  padding: 8px 10px;
+}
+
+.auth-text-button:hover {
+  text-decoration: underline;
+}
+
+.auth-profile-card {
+  border-radius: 22px;
+  padding: 24px;
 }
 
 .auth-switch {
@@ -962,6 +1174,36 @@ a {
 
   .form-grid {
     grid-template-columns: 1fr;
+  }
+
+  .auth-panel {
+    padding: 20px 16px;
+  }
+
+  .auth-layout {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .auth-copy {
+    min-height: auto;
+    padding: 20px;
+  }
+
+  .auth-copy h4 {
+    margin-top: 16px;
+  }
+
+  .auth-form {
+    padding: 16px;
+  }
+
+  .auth-tabs {
+    grid-template-columns: 1fr;
+  }
+
+  .auth-mode-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .catalog-grid,

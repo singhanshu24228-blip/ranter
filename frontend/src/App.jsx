@@ -51,6 +51,7 @@ const initialAuthFormState = {
   district: "",
   state: "",
   address: "",
+  acceptedTerms: false,
 };
 
 const restrictedSections = ["add-item", "your-items", "your-orders", "pickup-delivery"];
@@ -340,8 +341,11 @@ export default function App() {
   }
 
   function handleAuthInputChange(event) {
-    const { name, value } = event.target;
-    setAuthFormState((current) => ({ ...current, [name]: value }));
+    const { name, value, type, checked } = event.target;
+    setAuthFormState((current) => ({
+      ...current,
+      [name]: type === "checkbox" ? checked : value,
+    }));
   }
 
   function handleAdminInputChange(event) {
@@ -573,6 +577,11 @@ export default function App() {
 
     if (authFormState.password.length < 6) {
       setMessage("Password must be at least 6 characters.");
+      return;
+    }
+
+    if (authMode === "register" && authRole === "user" && !authFormState.acceptedTerms) {
+      setMessage("You must agree to the Terms & Conditions and Privacy Policy to create an account.");
       return;
     }
 
@@ -1323,16 +1332,17 @@ export default function App() {
 
       <main className="content-area">
         {activeSection === "auth" && (
-          <section className="panel">
-            <div className="section-heading">
+          <section className="panel auth-panel">
+            <div className="section-heading auth-heading">
               <div>
                 <p className="eyebrow">Authentication</p>
-                <h3>{currentUser ? "Your account" : "Login or sign up"}</h3>
+                <h3>{currentUser ? "Your account" : authMode === "register" ? "Create your Rentera account" : "Welcome back to Rentera"}</h3>
               </div>
+              {!currentUser && <p className="section-note">Choose your role to continue with the right workspace.</p>}
             </div>
 
             {currentUser ? (
-              <div className="profile-card">
+              <div className="profile-card auth-profile-card">
                 <div className="detail-list">
                   <span>Username: {currentUser.username}</span>
                   <span>Email: {currentUser.email}</span>
@@ -1347,60 +1357,69 @@ export default function App() {
                 </div>
               </div>
             ) : (
-              <form className="item-form" onSubmit={handleAuthSubmit}>
-
-
-                <div className="auth-switch">
-                  {authRoles.map((roleOption) => (
-                    <button
-                      key={roleOption.id}
-                      type="button"
-                      className={`menu-link ${authRole === roleOption.id ? "is-active" : ""}`}
-                      onClick={() => handleRoleChange(roleOption.id)}
-                    >
-                      {roleOption.label}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="auth-switch">
-                  <button
-                    type="button"
-                    className={`menu-link ${authMode === "login" ? "is-active" : ""}`}
-                    onClick={() => resetAuthForm("login")}
-                  >
-                    Log in
-                  </button>
-                  {authRole === "user" && (
-                    <button
-                      type="button"
-                      className={`menu-link ${authMode === "register" ? "is-active" : ""}`}
-                      onClick={() => resetAuthForm("register")}
-                    >
-                      Sign up
-                    </button>
-                  )}
-                  {authMode === "forgot-password" && (
-                    <button type="button" className="menu-link is-active">
-                      Forgot Password
-                    </button>
-                  )}
-                  {authMode === "reset-password" && (
-                    <button type="button" className="menu-link is-active">
-                      Reset Password
-                    </button>
-                  )}
-                </div>
-
-                {authRole === "admin" && (
-                  <div className="credential-note">
-                    <strong>Admin credentials</strong>
-                    <span>Email: singh01@gmail.com</span>
-                    <span>Password: anshu1234</span>
+              <div className="auth-layout">
+                <div className="auth-copy">
+                  <span className="auth-kicker">{authRoles.find((roleOption) => roleOption.id === authRole)?.label || "User"} access</span>
+                  <h4>{authRole === "delivery" ? "Manage pickups and returns without switching screens." : authRole === "admin" ? "Control marketplace activity from one secure entry point." : "Rent, list, and track local items with one account."}</h4>
+                  <div className="auth-benefits">
+                    <span>Verified accounts</span>
+                    <span>Order tracking</span>
+                    <span>Role based dashboard</span>
                   </div>
-                )}
+                </div>
 
-                <div className="form-grid">
+                <form className="item-form auth-form" onSubmit={handleAuthSubmit}>
+                  <div className="auth-tabs" aria-label="Account role">
+                    {authRoles.map((roleOption) => (
+                      <button
+                        key={roleOption.id}
+                        type="button"
+                        className={`auth-tab ${authRole === roleOption.id ? "is-active" : ""}`}
+                        onClick={() => handleRoleChange(roleOption.id)}
+                      >
+                        {roleOption.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="auth-tabs auth-mode-tabs" aria-label="Authentication mode">
+                    <button
+                      type="button"
+                      className={`auth-tab ${authMode === "login" ? "is-active" : ""}`}
+                      onClick={() => resetAuthForm("login")}
+                    >
+                      Log in
+                    </button>
+                    {authRole === "user" && (
+                      <button
+                        type="button"
+                        className={`auth-tab ${authMode === "register" ? "is-active" : ""}`}
+                        onClick={() => resetAuthForm("register")}
+                      >
+                        Sign up
+                      </button>
+                    )}
+                    {authMode === "forgot-password" && (
+                      <button type="button" className="auth-tab is-active">
+                        Forgot Password
+                      </button>
+                    )}
+                    {authMode === "reset-password" && (
+                      <button type="button" className="auth-tab is-active">
+                        Reset Password
+                      </button>
+                    )}
+                  </div>
+
+                  {authRole === "admin" && (
+                    <div className="credential-note">
+                      <strong>Admin credentials</strong>
+                      <span>Email: singh01@gmail.com</span>
+                      <span>Password: anshu1234</span>
+                    </div>
+                  )}
+
+                  <div className="form-grid auth-form-grid">
                   {authMode === "forgot-password" ? (
                     <label className="full-width">
                       <span>Email</span>
@@ -1498,6 +1517,41 @@ export default function App() {
                           required
                         />
                       </label>
+                      {authMode === "register" && authRole === "user" && (
+                        <label className="full-width checkbox-field">
+                          <span>
+                            I agree to the
+                            <button
+                              type="button"
+                              className="link-button"
+                              onClick={() => {
+                                setActiveSection("terms");
+                                setAuthMode("register");
+                              }}
+                            >
+                              Terms & Conditions
+                            </button>
+                            and
+                            <button
+                              type="button"
+                              className="link-button"
+                              onClick={() => {
+                                setActiveSection("privacy");
+                                setAuthMode("register");
+                              }}
+                            >
+                              Privacy Policy
+                            </button>
+                            .
+                          </span>
+                          <input
+                            type="checkbox"
+                            name="acceptedTerms"
+                            checked={authFormState.acceptedTerms}
+                            onChange={handleAuthInputChange}
+                          />
+                        </label>
+                      )}
                       {authMode === "register" && authRole === "delivery" && (
                         <>
                           <label>
@@ -1532,50 +1586,89 @@ export default function App() {
                       )}
                     </>
                   )}
-                </div>
+                  </div>
 
-                <div className="form-actions">
-                  {authMode === "forgot-password" ? (
-                    <button type="button" className="primary-button" onClick={handleForgotPasswordSubmit} disabled={submitting}>
-                      {submitting ? "Sending OTP..." : "Send OTP"}
-                    </button>
-                  ) : authMode === "reset-password" ? (
-                    <button type="button" className="primary-button" onClick={handleResetPasswordSubmit} disabled={submitting}>
-                      {submitting ? "Resetting..." : "Reset Password"}
-                    </button>
-                  ) : (
-                    <button type="submit" className="primary-button" disabled={submitting}>
-                      {submitting ? (authMode === "register" ? "Creating..." : "Logging in...") : authMode === "register" ? "Create account" : "Log in"}
-                    </button>
+                  <div className="form-actions auth-submit-row">
+                    {authMode === "forgot-password" ? (
+                      <button type="button" className="primary-button" onClick={handleForgotPasswordSubmit} disabled={submitting}>
+                        {submitting ? "Sending OTP..." : "Send OTP"}
+                      </button>
+                    ) : authMode === "reset-password" ? (
+                      <button type="button" className="primary-button" onClick={handleResetPasswordSubmit} disabled={submitting}>
+                        {submitting ? "Resetting..." : "Reset Password"}
+                      </button>
+                    ) : (
+                      <button type="submit" className="primary-button" disabled={submitting}>
+                        {submitting ? (authMode === "register" ? "Creating..." : "Logging in...") : authMode === "register" ? "Create account" : "Log in"}
+                      </button>
+                    )}
+                  </div>
+
+                  {authMode === "login" && authRole === "user" && (
+                    <div className="auth-helper-row">
+                      <button
+                        type="button"
+                        className="auth-text-button"
+                        onClick={() => setAuthMode("forgot-password")}
+                      >
+                        Forgot password?
+                      </button>
+                    </div>
                   )}
-                </div>
-
-                {authMode === "login" && authRole === "user" && (
-                  <div style={{ marginTop: "16px", textAlign: "center" }}>
-                    <button
-                      type="button"
-                      className="menu-link"
-                      style={{ fontSize: "0.9rem", color: "var(--primary)" }}
-                      onClick={() => setAuthMode("forgot-password")}
-                    >
-                      Forgot password?
-                    </button>
-                  </div>
-                )}
-                {authMode === "forgot-password" && (
-                  <div style={{ marginTop: "16px", textAlign: "center" }}>
-                    <button
-                      type="button"
-                      className="menu-link"
-                      style={{ fontSize: "0.9rem" }}
-                      onClick={() => setAuthMode("login")}
-                    >
-                      Back to login
-                    </button>
-                  </div>
-                )}
-              </form>
+                  {authMode === "forgot-password" && (
+                    <div className="auth-helper-row">
+                      <button
+                        type="button"
+                        className="auth-text-button"
+                        onClick={() => setAuthMode("login")}
+                      >
+                        Back to login
+                      </button>
+                    </div>
+                  )}
+                </form>
+              </div>
             )}
+          </section>
+        )}
+
+        {activeSection === "terms" && (
+          <section className="panel">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Legal</p>
+                <h3>Terms & Conditions</h3>
+              </div>
+            </div>
+            <div className="legal-content">
+              <p>By creating an account on Rentera, you agree to use the platform in accordance with these Terms & Conditions. You may not use the service for any unlawful purpose, and you agree to provide accurate information during signup.</p>
+              
+              <p>All rentals are subject to availability and the terms set by the item owner. Renters are responsible for returning items in the condition they were received, and may be liable for damages or loss.</p>
+              <p>If rented item found damages renter must pay 30% of product original price and must  return that item.</p><p>Delivey charges may vary according to distance and product.</p>
+              <p>By hitting "Create account", you confirm that you have read and accepted these Terms & Conditions and the Privacy Policy.</p>
+            </div>
+            <div className="card-actions">
+              <button type="button" className="primary-button" onClick={() => setActiveSection("auth")}>Back to signup</button>
+            </div>
+          </section>
+        )}
+
+        {activeSection === "privacy" && (
+          <section className="panel">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Legal</p>
+                <h3>Privacy Policy</h3>
+              </div>
+            </div>
+            <div className="legal-content">
+              <p>Rentera collects and stores the information you provide during signup and when using the service. This includes contact details, rental listings, order history, and delivery information.</p>
+              <p>We will never sell your personal information to third parties. We may use your data to provide the service, improve the platform, and communicate important updates.</p>
+              <p>By creating an account, you agree to Rentera's collection and use of your information as described in this Privacy Policy.</p>
+            </div>
+            <div className="card-actions">
+              <button type="button" className="primary-button" onClick={() => setActiveSection("auth")}>Back to signup</button>
+            </div>
           </section>
         )}
 
