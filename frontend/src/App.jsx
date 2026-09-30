@@ -142,6 +142,21 @@ function calculateProximityScore(userAddress, targetAddress) {
   return score;
 }
 
+function getCurrentCoordinates() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) {
+      reject(new Error("This browser does not support location access."));
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      ({ coords }) => resolve({ latitude: coords.latitude, longitude: coords.longitude }),
+      () => reject(new Error("Location access was denied or unavailable.")),
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 },
+    );
+  });
+}
+
 function buildMenuSections(currentUser) {
   const roleTheme = roleThemes[currentUser?.role || "guest"];
   const sections = [
@@ -173,6 +188,9 @@ export default function App() {
     return storedUser ? (window.location.pathname === "/pickup_delivery" ? "pickup-delivery" : "browse") : resolveInitialSection();
   });
   const [selectedCategory, setSelectedCategory] = useState("all");
+  const [searchLocation, setSearchLocation] = useState(null);
+  const [searchRadiusKm, setSearchRadiusKm] = useState(0);
+  const [locationLoading, setLocationLoading] = useState(false);
   const [allItems, setAllItems] = useState([]);
   const [catalogItems, setCatalogItems] = useState([]);
   const [orders, setOrders] = useState([]);
@@ -228,8 +246,14 @@ export default function App() {
       try {
         setLoading(true);
 
+        const catalogParams = selectedCategory === "all" ? {} : { category: selectedCategory };
+        if (searchLocation) {
+          catalogParams.latitude = searchLocation.latitude;
+          catalogParams.longitude = searchLocation.longitude;
+        }
+
         const requests = [
-          api.get("/items", { params: selectedCategory === "all" ? {} : { category: selectedCategory } }),
+          api.get("/items", { params: catalogParams }),
           currentUser?.role === "user" ? api.get("/items", { params: { ownerUserId: currentUser._id } }) : Promise.resolve({ data: [] }),
           currentUser?.role === "user" ? api.get("/orders", { params: { userId: currentUser._id } }) : Promise.resolve({ data: [] }),
           currentUser?.role === "delivery"
@@ -244,6 +268,7 @@ export default function App() {
 
         const [catalogResponse, allItemsResponse, ordersResponse, deliveryOrdersResponse, adminReqResponse] = await Promise.all(requests);
         setCatalogItems(catalogResponse.data);
+        setSearchRadiusKm(Number(catalogResponse.headers["x-search-radius-km"]) || 0);
         setAllItems(allItemsResponse.data);
         setOrders(ordersResponse.data);
         setDeliveryOrders(deliveryOrdersResponse.data);
@@ -256,7 +281,7 @@ export default function App() {
     }
 
     loadData();
-  }, [currentUser, selectedCategory]);
+  }, [currentUser, selectedCategory, searchLocation]);
 
   useEffect(() => {
     if (currentUser) {
@@ -322,6 +347,18 @@ export default function App() {
   function handleInputChange(event) {
     const { name, value } = event.target;
     setFormState((current) => ({ ...current, [name]: value }));
+  }
+
+  async function handleUseLocation() {
+    try {
+      setLocationLoading(true);
+      setSearchLocation(await getCurrentCoordinates());
+      setMessage("");
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setLocationLoading(false);
+    }
   }
 
   function handleRentInputChange(event) {
@@ -418,6 +455,7 @@ export default function App() {
       setMessage("");
 
       const combinedAddress = formatAddressDetail(formState);
+      const itemCoordinates = editingItemId ? null : await getCurrentCoordinates();
 
       if (editingItemId) {
         const response = await api.put(`/items/${editingItemId}`, {
@@ -463,6 +501,8 @@ export default function App() {
         Object.entries({ ...formState, address: combinedAddress }).forEach(([key, value]) => {
           payload.append(key, value);
         });
+        payload.append("latitude", itemCoordinates.latitude);
+        payload.append("longitude", itemCoordinates.longitude);
         payload.append("ownerUserId", currentUser._id);
         Object.entries(files).forEach(([key, file]) => {
           if (file) {
@@ -1791,7 +1831,17 @@ export default function App() {
                         <p className="eyebrow">Available products</p>
                         <h3>Browse rental items</h3>
                       </div>
-                      <p className="section-note">Filter using the category dropdown in the top bar.</p>
+                      <div className="card-actions">
+                        {searchLocation && <span className="section-note">Showing items within {searchRadiusKm} km</span>}
+                        <button type="button" className="secondary-button" onClick={handleUseLocation} disabled={locationLoading}>
+                          {locationLoading ? "Finding location..." : searchLocation ? "Refresh location" : "Use my location"}
+                        </button>
+                        {searchLocation && (
+                          <button type="button" className="secondary-button" onClick={() => setSearchLocation(null)}>
+                            Show all
+                          </button>
+                        )}
+                      </div>
                     </div>
 
                     {selectedRentItem && (
@@ -1882,6 +1932,7 @@ export default function App() {
                               <div className="meta-row">
                                 <span className="tag">{item.category}</span>
                                 <span className="price">Rs {item.rentCost}/day</span>
+                                {item.distanceKm !== undefined && <span className="tag">{item.distanceKm} km away</span>}
                               </div>
                               <h4>{item.brandName}</h4>
                               <p className="description">{item.productDescription}</p>
@@ -1942,7 +1993,11 @@ export default function App() {
                         ))}
                       </div>
                     ) : (
-                      <div className="empty-state">No items found for this category.</div>
+                      <div className="empty-state">
+                        {searchLocation
+                          ? `No ${selectedCategory === "all" ? "items" : `${selectedCategory.toLowerCase()} items`} found within ${searchRadiusKm} km. Try another category or show all items.`
+                          : "No items found for this category."}
+                      </div>
                     )}
                   </>
                 )}
@@ -2300,6 +2355,7 @@ export default function App() {
                   <span>Main image</span>
                   <input type="file" name="mainImage" accept="image/*" onChange={handleFileChange} required={!editingItemId} />
                 </label>
+                {!editingItemId && <p className="section-note full-width">Your browser will ask to use this device's location when you publish, so nearby renters can find this item.</p>}
                 <label>
                   <span>Additional image</span>
                   <input type="file" name="additionalImage" accept="image/*" onChange={handleFileChange} />

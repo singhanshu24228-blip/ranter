@@ -15,6 +15,7 @@ app.use(
   cors({
     origin: process.env.CLIENT_URL ? process.env.CLIENT_URL.split(",") : true,
     credentials: true,
+    exposedHeaders: ["X-Search-Radius-Km"],
   }),
 );
 app.use(express.json());

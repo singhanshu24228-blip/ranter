@@ -67,6 +67,17 @@ const itemSchema = new mongoose.Schema(
       ref: "User",
       required: true,
     },
+    location: {
+      type: {
+        type: String,
+        enum: ["Point"],
+        default: "Point",
+      },
+      coordinates: {
+        type: [Number],
+        validate: (coordinates) => coordinates.length === 2,
+      },
+    },
     media: {
       type: mediaSchema,
       required: true,
@@ -80,5 +91,7 @@ const itemSchema = new mongoose.Schema(
     timestamps: true,
   },
 );
+
+itemSchema.index({ location: "2dsphere" });
 
 export const Item = mongoose.model("Item", itemSchema);

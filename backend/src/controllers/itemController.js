@@ -8,6 +8,42 @@ function resolveUserId(candidate) {
   return mongoose.isValidObjectId(candidate) ? candidate : "";
 }
 
+function resolveCoordinates(latitude, longitude) {
+  if (latitude === undefined && longitude === undefined) {
+    return null;
+  }
+
+  const lat = Number(latitude);
+  const lng = Number(longitude);
+  if (
+    !Number.isFinite(lat) ||
+    !Number.isFinite(lng) ||
+    lat < -90 ||
+    lat > 90 ||
+    lng < -180 ||
+    lng > 180
+  ) {
+    return undefined;
+  }
+
+  return [lng, lat];
+}
+
+function calculateDistanceKm(from, to) {
+  const radians = (degrees) => (degrees * Math.PI) / 180;
+  const [fromLongitude, fromLatitude] = from;
+  const [toLongitude, toLatitude] = to;
+  const latitudeDelta = radians(toLatitude - fromLatitude);
+  const longitudeDelta = radians(toLongitude - fromLongitude);
+  const haversine =
+    Math.sin(latitudeDelta / 2) ** 2 +
+    Math.cos(radians(fromLatitude)) *
+      Math.cos(radians(toLatitude)) *
+      Math.sin(longitudeDelta / 2) ** 2;
+
+  return 6371 * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
+}
+
 function assertCloudinaryConfig() {
   if (
     !process.env.CLOUDINARY_CLOUD_NAME ||
@@ -85,6 +121,9 @@ export async function createItem(req, res) {
     pinCode,
     phoneNumber,
     ownerUser: ownerUserId,
+    location: resolveCoordinates(req.body.latitude, req.body.longitude)
+      ? { type: "Point", coordinates: resolveCoordinates(req.body.latitude, req.body.longitude) }
+      : undefined,
     media: {
       mainImage,
       additionalImage,
@@ -96,7 +135,12 @@ export async function createItem(req, res) {
 }
 
 export async function getItems(req, res) {
-  const { category, ownerUserId, isAvailable } = req.query;
+  const { category, ownerUserId, isAvailable, latitude, longitude } = req.query;
+  const coordinates = resolveCoordinates(latitude, longitude);
+  if (coordinates === undefined) {
+    return res.status(400).json({ message: "A valid latitude and longitude are required." });
+  }
+
   const query = {};
 
   if (category && category !== "all") {
@@ -113,18 +157,45 @@ export async function getItems(req, res) {
     query.isAvailable = false;
   }
 
-  let items = await Item.find(query).sort({ createdAt: -1 });
-  
+  if (coordinates) {
+    query.location = {
+      $near: {
+        $geometry: { type: "Point", coordinates },
+        $maxDistance: 50000,
+      },
+    };
+  }
+
+  let items = await Item.find(query);
+  let searchRadiusKm = 0;
+  if (coordinates) {
+    const distances = items.map((item) => calculateDistanceKm(coordinates, item.location.coordinates));
+    searchRadiusKm = [10, 20, 30, 50].find((radius) => distances.some((distance) => distance <= radius)) || 50;
+    items = items
+      .map((item, index) => ({ item, distanceKm: distances[index] }))
+      .filter(({ distanceKm }) => distanceKm <= searchRadiusKm)
+      .map(({ item, distanceKm }) => ({
+        ...item.toObject(),
+        distanceKm: Math.round(distanceKm * 10) / 10,
+      }));
+  } else {
+    items = items.sort((first, second) => second.createdAt - first.createdAt).map((item) => item.toObject());
+  }
+
+  if (coordinates) {
+    res.set("X-Search-Radius-Km", String(searchRadiusKm));
+  }
+
   if (!ownerUserId) {
-    items = items.map(item => {
-      const obj = item.toObject();
-      delete obj.address;
-      delete obj.pinCode;
-      delete obj.phoneNumber;
-      return obj;
+    items = items.map((item) => {
+      delete item.address;
+      delete item.pinCode;
+      delete item.phoneNumber;
+      return item;
     });
   }
 
+  items.forEach((item) => delete item.location);
   res.json(items);
 }
 
