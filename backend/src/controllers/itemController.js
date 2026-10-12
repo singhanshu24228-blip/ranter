@@ -3,6 +3,7 @@ import { Item } from "../models/Item.js";
 import { cloudinary } from "../config/cloudinary.js";
 import { Order } from "../models/Order.js";
 import { User } from "../models/User.js";
+import { invalidatePublicItemCache } from "../middleware/itemCache.js";
 
 function resolveUserId(candidate) {
   return mongoose.isValidObjectId(candidate) ? candidate : "";
@@ -131,14 +132,19 @@ export async function createItem(req, res) {
     },
   });
 
+  await invalidatePublicItemCache();
   res.status(201).json(item);
 }
 
 export async function getItems(req, res) {
-  const { category, ownerUserId, isAvailable, latitude, longitude } = req.query;
+  const { category, ownerUserId, isAvailable, latitude, longitude, maxDistanceKm } = req.query;
   const coordinates = resolveCoordinates(latitude, longitude);
+  const requestedMaxDistanceKm = maxDistanceKm === undefined ? null : Number(maxDistanceKm);
   if (coordinates === undefined) {
     return res.status(400).json({ message: "A valid latitude and longitude are required." });
+  }
+  if (maxDistanceKm !== undefined && ![10, 20, 30, 50].includes(requestedMaxDistanceKm)) {
+    return res.status(400).json({ message: "Distance must be 10, 20, 30, or 50 km." });
   }
 
   const query = {};
@@ -161,7 +167,7 @@ export async function getItems(req, res) {
     query.location = {
       $near: {
         $geometry: { type: "Point", coordinates },
-        $maxDistance: 50000,
+        $maxDistance: (requestedMaxDistanceKm || 50) * 1000,
       },
     };
   }
@@ -170,7 +176,7 @@ export async function getItems(req, res) {
   let searchRadiusKm = 0;
   if (coordinates) {
     const distances = items.map((item) => calculateDistanceKm(coordinates, item.location.coordinates));
-    searchRadiusKm = [10, 20, 30, 50].find((radius) => distances.some((distance) => distance <= radius)) || 50;
+    searchRadiusKm = requestedMaxDistanceKm || [10, 20, 30, 50].find((radius) => distances.some((distance) => distance <= radius)) || 50;
     items = items
       .map((item, index) => ({ item, distanceKm: distances[index] }))
       .filter(({ distanceKm }) => distanceKm <= searchRadiusKm)
@@ -270,6 +276,7 @@ export async function updateItem(req, res) {
     },
   );
 
+  await invalidatePublicItemCache();
   res.json(item);
 }
 
@@ -316,5 +323,6 @@ export async function deleteItem(req, res) {
   await Item.findByIdAndDelete(itemId);
   await Order.deleteMany({ item: itemId });
 
+  await invalidatePublicItemCache();
   res.json({ message: "Item deleted successfully.", itemId });
 }

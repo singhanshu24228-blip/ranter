@@ -6,6 +6,7 @@ import { DeliveryEarning } from "../models/DeliveryEarning.js";
 import { SellerEarning } from "../models/SellerEarning.js";
 import { cloudinary } from "../config/cloudinary.js";
 import { sendEmail } from "../utils/email.js";
+import { invalidatePublicItemCache } from "../middleware/itemCache.js";
 
 function assertCloudinaryConfig() {
   if (
@@ -82,8 +83,8 @@ export async function createOrder(req, res) {
   if (!Number.isInteger(parsedRentalDays) || parsedRentalDays < 1) {
     return res.status(400).json({ message: "Number of rental days must be at least 1." });
   }
-  if (parsedRentalDays > 7) {
-    return res.status(400).json({ message: "Number of rental days cannot exceed 7." });
+  if (parsedRentalDays > 15) {
+    return res.status(400).json({ message: "Number of rental days cannot exceed 15." });
   }
 
   const item = await Item.findById(itemId);
@@ -120,6 +121,7 @@ export async function createOrder(req, res) {
   });
   
   await Item.findByIdAndUpdate(itemId, { isAvailable: false });
+  await invalidatePublicItemCache();
 
   const populatedOrder = await order.populate({
     path: "item",
@@ -146,7 +148,8 @@ export async function createOrder(req, res) {
 }
 
 export async function getOrders(req, res) {
-  const { userId, view } = req.query;
+  const { view } = req.query;
+  const userId = req.user.role === "admin" ? req.query.userId : req.user._id;
   const query = {};
 
   if (view === "pickup_delivery") {
@@ -193,22 +196,102 @@ export async function getOrders(req, res) {
   res.json(orders);
 }
 
-export async function approveOrder(req, res) {
+export async function extendRental(req, res) {
   const { orderId } = req.params;
-  const { deliveryCharge } = req.body;
+  const requestedRentalDays = Number(req.body.rentalDays);
 
   if (!mongoose.isValidObjectId(orderId)) {
     return res.status(400).json({ message: "Invalid order id." });
   }
 
-  const updateFields = { status: "Approved" };
-  if (deliveryCharge !== undefined) {
-    updateFields.deliveryCharge = Number(deliveryCharge) || 0;
+  if (!Number.isInteger(requestedRentalDays) || requestedRentalDays < 1 || requestedRentalDays > 20) {
+    return res.status(400).json({ message: "Total rental days must be between 1 and 20." });
+  }
+
+  const existingOrder = await Order.findById(orderId);
+  if (!existingOrder) {
+    return res.status(404).json({ message: "Order not found." });
+  }
+
+  if (req.user.role !== "user" || String(existingOrder.renterUser) !== req.user._id) {
+    return res.status(403).json({ message: "You can only extend your own rentals." });
+  }
+
+  if (existingOrder.status !== "DeliveredToRenter") {
+    return res.status(400).json({ message: "A rental can only be extended after it has been delivered and before renter pickup." });
+  }
+
+  const rentalStart = existingOrder.deliveredToRenterAt
+    ? new Date(existingOrder.deliveredToRenterAt)
+    : new Date(existingOrder.createdAt);
+  const rentalEnd = new Date(rentalStart.getTime() + existingOrder.renter.rentalDays * 24 * 60 * 60 * 1000);
+  if (Date.now() >= rentalEnd.getTime()) {
+    return res.status(400).json({ message: "The rental period has ended. Extensions must be requested before the due date." });
+  }
+
+  if (requestedRentalDays <= existingOrder.renter.rentalDays) {
+    return res.status(400).json({ message: "The extended rental period must be longer than the current period." });
+  }
+
+  const paidRentalDays = existingOrder.isPaid
+    ? existingOrder.renter.rentalDays
+    : (existingOrder.paidRentalDays || 0);
+
+  const order = await Order.findOneAndUpdate(
+    {
+      _id: orderId,
+      renterUser: existingOrder.renterUser,
+      status: "DeliveredToRenter",
+      "renter.rentalDays": existingOrder.renter.rentalDays,
+    },
+    {
+      $set: {
+        "renter.rentalDays": requestedRentalDays,
+        paidRentalDays,
+        isPaid: false,
+      },
+    },
+    { new: true },
+  ).populate({
+    path: "item",
+    populate: { path: "ownerUser" },
+  }).populate("renterUser deliveryPartner");
+
+  if (!order) {
+    return res.status(409).json({ message: "This rental changed while you were extending it. Refresh and try again." });
+  }
+
+  if (order.item?.ownerUser?.email) {
+    const renterName = order.renterUser?.username || "The renter";
+    const rentalStart = order.deliveredToRenterAt ? new Date(order.deliveredToRenterAt) : new Date(order.createdAt);
+    const expectedReturn = new Date(rentalStart.getTime() + requestedRentalDays * 24 * 60 * 60 * 1000);
+    const message = `${renterName} extended the rental of ${order.item.brandName} to ${requestedRentalDays} days. The updated expected return date is ${expectedReturn.toLocaleDateString()}.`;
+    sendEmail(order.item.ownerUser.email, "Rental Period Extended", message).catch((error) => {
+      console.error("Failed to notify owner about rental extension:", error);
+    });
+  }
+
+  const responseOrder = order.toObject();
+  if (req.user.role !== "admin" && responseOrder.item) {
+    delete responseOrder.item.address;
+    delete responseOrder.item.pinCode;
+    delete responseOrder.item.phoneNumber;
+    delete responseOrder.item.ownerUser;
+  }
+
+  res.json(responseOrder);
+}
+
+export async function approveOrder(req, res) {
+  const { orderId } = req.params;
+
+  if (!mongoose.isValidObjectId(orderId)) {
+    return res.status(400).json({ message: "Invalid order id." });
   }
 
   const order = await Order.findOneAndUpdate(
     { _id: orderId, status: "Placed" },
-    updateFields,
+    { status: "Approved" },
     { new: true }
   ).populate({
     path: "item",
@@ -231,7 +314,7 @@ export async function setDeliveryCharge(req, res) {
   }
 
   const parsedCharge = Number(deliveryCharge);
-  if (isNaN(parsedCharge) || parsedCharge < 0) {
+  if (!Number.isFinite(parsedCharge) || parsedCharge < 0) {
     return res.status(400).json({ message: "Invalid delivery charge." });
   }
 
@@ -295,6 +378,7 @@ export async function deleteOrder(req, res) {
   // Restore item availability if it was cancelled and not already completed
   if (order.status !== "ReturnedToSeller") {
     await Item.findByIdAndUpdate(order.item, { isAvailable: true });
+    await invalidatePublicItemCache();
   }
 
   res.json({ message: "Order deleted successfully." });
@@ -392,6 +476,16 @@ export async function updateOrderStatus(req, res) {
     return res.status(400).json({ message: "Invalid status transition." });
   }
 
+  if (!isAdmin && ["PickedUpFromRenter", "ReturnedToSeller"].includes(nextStatus)) {
+    const orderWithPendingExtension = await Order.findById(orderId).select("isPaid paidRentalDays");
+    if (!orderWithPendingExtension) {
+      return res.status(404).json({ message: "Order not found." });
+    }
+    if (!orderWithPendingExtension.isPaid) {
+      return res.status(400).json({ message: "Pay the current rental balance before pickup or return can be completed." });
+    }
+  }
+
   const updateFields = { status: nextStatus };
   if (nextStatus === "PickedUpFromSeller") updateFields.pickedUpFromSellerAt = new Date();
   if (nextStatus === "DeliveredToRenter") updateFields.deliveredToRenterAt = new Date();
@@ -401,6 +495,9 @@ export async function updateOrderStatus(req, res) {
   const query = { _id: orderId };
   if (!isAdmin) {
     query.deliveryPartner = deliveryUserId;
+  }
+  if (!isAdmin && ["PickedUpFromRenter", "ReturnedToSeller"].includes(nextStatus)) {
+    query.isPaid = true;
   }
 
   const order = await Order.findOneAndUpdate(
@@ -413,11 +510,15 @@ export async function updateOrderStatus(req, res) {
   }).populate("renterUser deliveryPartner");
 
   if (!order) {
+    if (!isAdmin && ["PickedUpFromRenter", "ReturnedToSeller"].includes(nextStatus)) {
+      return res.status(409).json({ message: "Payment status changed. Confirm the rental balance is paid before continuing." });
+    }
     return res.status(404).json({ message: "Assigned delivery not found for this partner." });
   }
 
   if (nextStatus === "ReturnedToSeller") {
     await Item.findByIdAndUpdate(order.item._id, { isAvailable: true });
+    await invalidatePublicItemCache();
     
     // Update earnings for delivery partner
     const deliveryCharge = order.deliveryCharge || 0;

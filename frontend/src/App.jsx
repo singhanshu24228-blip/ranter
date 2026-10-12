@@ -182,13 +182,23 @@ function buildMenuSections(currentUser) {
   return sections;
 }
 
+function getRentalEndDate(order) {
+  const rentalDays = order.renter?.rentalDays || 0;
+  if (!rentalDays) return null;
+
+  const rentalStart = order.deliveredToRenterAt
+    ? new Date(order.deliveredToRenterAt)
+    : new Date(order.createdAt);
+  return new Date(rentalStart.getTime() + rentalDays * 24 * 60 * 60 * 1000);
+}
+
 export default function App() {
   const [activeSection, setActiveSection] = useState(() => {
-    const storedUser = window.localStorage.getItem("rentera-user");
-    return storedUser ? (window.location.pathname === "/pickup_delivery" ? "pickup-delivery" : "browse") : resolveInitialSection();
+    return window.location.pathname === "/pickup_delivery" ? "pickup-delivery" : resolveInitialSection();
   });
   const [selectedCategory, setSelectedCategory] = useState("all");
   const [searchLocation, setSearchLocation] = useState(null);
+  const [selectedDistanceKm, setSelectedDistanceKm] = useState("all");
   const [searchRadiusKm, setSearchRadiusKm] = useState(0);
   const [locationLoading, setLocationLoading] = useState(false);
   const [allItems, setAllItems] = useState([]);
@@ -207,23 +217,27 @@ export default function App() {
     video: "",
   });
   const [loading, setLoading] = useState(true);
+  const [authReady, setAuthReady] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState("");
+  const [editingDeliveryChargeOrderId, setEditingDeliveryChargeOrderId] = useState("");
+  const [deliveryChargeInput, setDeliveryChargeInput] = useState("");
   const [selectedRentItemId, setSelectedRentItemId] = useState("");
   const [rentFormState, setRentFormState] = useState(initialRentFormState);
   const [rentFiles, setRentFiles] = useState({ panCardImage: null, aadhaarCardImage: null });
   const [rentPreviews, setRentPreviews] = useState({ panCardImage: "", aadhaarCardImage: "" });
   const [editingItemId, setEditingItemId] = useState("");
-  const [currentUser, setCurrentUser] = useState(() => {
-    const storedUser = window.localStorage.getItem("rentera-user");
-    return storedUser ? JSON.parse(storedUser) : null;
-  });
+  const [currentUser, setCurrentUser] = useState(null);
   const [authMode, setAuthMode] = useState("login");
   const [authRole, setAuthRole] = useState("user");
   const [authFormState, setAuthFormState] = useState(initialAuthFormState);
+  const [showAuthPassword, setShowAuthPassword] = useState(false);
   const [deliveryView, setDeliveryView] = useState("incomplete");
   const [orderView, setOrderView] = useState("you-rent");
   const [adminDeliveryForm, setAdminDeliveryForm] = useState(initialAuthFormState);
+  const [adminDeliveryConfirmPassword, setAdminDeliveryConfirmPassword] = useState("");
+  const [showAdminDeliveryPassword, setShowAdminDeliveryPassword] = useState(false);
+  const [showAdminDeliveryConfirmPassword, setShowAdminDeliveryConfirmPassword] = useState(false);
   const [adminMessage, setAdminMessage] = useState("");
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [otp, setOtp] = useState("");
@@ -231,8 +245,9 @@ export default function App() {
   const [selectedViewItemId, setSelectedViewItemId] = useState("");
   const [showEarningsModal, setShowEarningsModal] = useState(false);
   const [earningsData, setEarningsData] = useState(null);
-  const [showSellerEarningsModal, setShowSellerEarningsModal] = useState(false);
   const [sellerEarningsData, setSellerEarningsData] = useState(null);
+  const [rentalExtensionDays, setRentalExtensionDays] = useState({});
+  const [isRentalExtensionOpen, setIsRentalExtensionOpen] = useState({});
   const [adminRequests, setAdminRequests] = useState({ deliveryRequests: [], sellerRequests: [] });
   const [sellerPaymentMethod, setSellerPaymentMethod] = useState("upi");
   const [deliveryPaymentMethod, setDeliveryPaymentMethod] = useState("upi");
@@ -242,14 +257,62 @@ export default function App() {
   const [isLocationFormVisible, setIsLocationFormVisible] = useState(false);
 
   useEffect(() => {
+    if (!authReady || !["guest", "user"].includes(currentUser?.role || "guest")) return;
+
+    let isActive = true;
+    setLocationLoading(true);
+    getCurrentCoordinates()
+      .then((coordinates) => {
+        if (isActive) {
+          setSearchLocation(coordinates);
+          setMessage("");
+        }
+      })
+      .catch((error) => {
+        if (isActive) {
+          setSearchLocation(null);
+          setMessage(error.message);
+        }
+      })
+      .finally(() => {
+        if (isActive) setLocationLoading(false);
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [authReady, currentUser?.role]);
+
+  useEffect(() => {
+    let isActive = true;
+    api.get("/auth/session")
+      .then((response) => {
+        if (isActive) setCurrentUser(response.data.user);
+      })
+      .catch(() => {
+        if (isActive) setCurrentUser(null);
+      })
+      .finally(() => {
+        if (isActive) setAuthReady(true);
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, []);
+
+  useEffect(() => {
     async function loadData() {
+      if (!authReady) return;
+
       try {
         setLoading(true);
 
         const catalogParams = selectedCategory === "all" ? {} : { category: selectedCategory };
-        if (searchLocation) {
+        if (searchLocation && selectedDistanceKm !== "all") {
           catalogParams.latitude = searchLocation.latitude;
           catalogParams.longitude = searchLocation.longitude;
+          catalogParams.maxDistanceKm = selectedDistanceKm;
         }
 
         const requests = [
@@ -281,15 +344,10 @@ export default function App() {
     }
 
     loadData();
-  }, [currentUser, selectedCategory, searchLocation]);
+  }, [authReady, currentUser, selectedCategory, searchLocation, selectedDistanceKm]);
 
   useEffect(() => {
-    if (currentUser) {
-      window.localStorage.setItem("rentera-user", JSON.stringify(currentUser));
-      return;
-    }
-
-    window.localStorage.removeItem("rentera-user");
+    if (currentUser) return;
     setAllItems([]);
     setOrders([]);
     setDeliveryOrders([]);
@@ -323,10 +381,10 @@ export default function App() {
   }, [currentUser]);
 
   useEffect(() => {
-    if (!currentUser && restrictedSections.includes(activeSection)) {
+    if (authReady && !currentUser && restrictedSections.includes(activeSection)) {
       setActiveSection(resolveInitialSection());
     }
-  }, [activeSection, currentUser]);
+  }, [activeSection, authReady, currentUser]);
 
   useEffect(() => {
     if (currentUser?.role === "user") {
@@ -349,15 +407,20 @@ export default function App() {
     setFormState((current) => ({ ...current, [name]: value }));
   }
 
-  async function handleUseLocation() {
-    try {
+  function handleDistanceChange(event) {
+    const distance = event.target.value;
+    setSelectedDistanceKm(distance);
+    setMessage("");
+    if (distance !== "all" && !searchLocation) {
       setLocationLoading(true);
-      setSearchLocation(await getCurrentCoordinates());
-      setMessage("");
-    } catch (error) {
-      setMessage(error.message);
-    } finally {
-      setLocationLoading(false);
+      getCurrentCoordinates()
+        .then(setSearchLocation)
+        .catch((error) => {
+          setSearchLocation(null);
+          setSelectedDistanceKm("all");
+          setMessage(error.message);
+        })
+        .finally(() => setLocationLoading(false));
     }
   }
 
@@ -417,13 +480,6 @@ export default function App() {
     setAuthRole(nextRole);
     setMessage("");
     resetAuthForm("login");
-    if (nextRole === "admin") {
-      setAuthFormState({
-        ...initialAuthFormState,
-        email: "singh01@gmail.com",
-        password: "anshu1234",
-      });
-    }
   }
 
   async function handleSubmit(event) {
@@ -510,9 +566,7 @@ export default function App() {
           }
         });
 
-        const response = await api.post("/items", payload, {
-          headers: { "Content-Type": "multipart/form-data" },
-        });
+        const response = await api.post("/items", payload);
 
         setAllItems((current) => [response.data, ...current]);
         setCatalogItems((current) =>
@@ -700,6 +754,11 @@ export default function App() {
       return;
     }
 
+    if (adminDeliveryForm.password !== adminDeliveryConfirmPassword) {
+      setAdminMessage("Password and confirm password do not match.");
+      return;
+    }
+
     const combinedAddress = formatAddressDetail(adminDeliveryForm);
     if (!combinedAddress.trim()) {
       setAdminMessage("Address is required for delivery accounts.");
@@ -713,12 +772,13 @@ export default function App() {
       const response = await api.post("/auth/register-delivery", {
         ...adminDeliveryForm,
         address: combinedAddress,
-        adminEmail: "singh01@gmail.com",
-        adminPassword: "anshu1234",
       });
 
       setAdminMessage(`Success: Delivery account for ${response.data.user.username} created.`);
       setAdminDeliveryForm(initialAuthFormState);
+      setAdminDeliveryConfirmPassword("");
+      setShowAdminDeliveryPassword(false);
+      setShowAdminDeliveryConfirmPassword(false);
     } catch (error) {
       setAdminMessage(resolveError(error, "Failed to create delivery account."));
     } finally {
@@ -757,7 +817,10 @@ export default function App() {
     }
   }
 
-  function handleLogout() {
+  async function handleLogout() {
+    try {
+      await api.post("/auth/logout");
+    } catch {}
     setCurrentUser(null);
     setAuthRole("user");
     resetAuthForm("login");
@@ -769,7 +832,9 @@ export default function App() {
     try {
       setSubmitting(true);
       setMessage("");
-      await api.post("/auth/send-verification-otp", { userId: currentUser._id });
+      await api.post("/auth/send-verification-otp", {
+        purpose: settingsOtpMode === "delete" ? "account-deletion" : "email-change",
+      });
       setMessage("OTP sent to your current email address.");
     } catch (error) {
       setMessage(resolveError(error, "Failed to send OTP."));
@@ -797,25 +862,21 @@ export default function App() {
         }
 
         const response = await api.post("/auth/change-email", {
-          userId: currentUser._id,
           otp: settingsOtp,
           newEmail: settingsNewEmail
         });
 
         setCurrentUser(response.data.user);
-        window.localStorage.setItem("rentera-user", JSON.stringify(response.data.user));
         setMessage("Email changed successfully.");
         setSettingsOtpMode("");
         setSettingsOtp("");
         setSettingsNewEmail("");
       } else if (settingsOtpMode === "delete") {
         await api.post("/auth/delete-account", {
-          userId: currentUser._id,
           otp: settingsOtp
         });
 
-        window.localStorage.removeItem("rentera-user");
-        handleLogout();
+        await handleLogout();
         return;
       }
     } catch (error) {
@@ -908,14 +969,8 @@ export default function App() {
         }
       });
 
-      const response = await api.post("/orders", payload, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      const response = await api.post("/orders", payload);
       setOrders((current) => [response.data, ...current]);
-
-      // Reload catalog to reflect updated item availability
-      const updatedCatalogResponse = await api.get("/items", { params: selectedCategory === "all" ? {} : { category: selectedCategory } });
-      setCatalogItems(updatedCatalogResponse.data);
 
       setSelectedRentItemId("");
       setRentFormState(initialRentFormState);
@@ -923,6 +978,20 @@ export default function App() {
       setRentPreviews({ panCardImage: "", aadhaarCardImage: "" });
       setActiveSection("your-orders");
       setMessage("Order placed successfully.");
+
+      try {
+        const updatedCatalogResponse = await api.get("/items", {
+          params: selectedCategory === "all" ? {} : { category: selectedCategory },
+        });
+        setCatalogItems(updatedCatalogResponse.data);
+      } catch (error) {
+        setMessage(
+          `Order placed successfully, but item availability could not be refreshed. ${resolveError(
+            error,
+            "Refresh the page to see the latest availability.",
+          )}`,
+        );
+      }
     } catch (error) {
       setMessage(resolveError(error, "Failed to place order."));
     } finally {
@@ -970,18 +1039,13 @@ export default function App() {
 
   async function handleApproveOrder(orderId) {
     if (!currentUser || currentUser.role !== "admin") return;
-    const chargeInput = window.prompt("Enter delivery charge (optional, default is 0):", "0");
-    if (chargeInput === null) return; // cancelled
-
-    const deliveryCharge = Number(chargeInput) || 0;
-
     try {
       setSubmitting(true);
       setMessage("");
-      const response = await api.post(`/orders/${orderId}/approve`, { deliveryCharge });
+      const response = await api.post(`/orders/${orderId}/approve`);
       const updatedOrder = response.data;
       setDeliveryOrders((current) => current.map((order) => (order._id === updatedOrder._id ? updatedOrder : order)));
-      setMessage(`Order approved for delivery with a charge of ₹${deliveryCharge}.`);
+      setMessage("Order approved for delivery. You can now set the delivery charge.");
     } catch (error) {
       setMessage(resolveError(error, "Failed to approve order."));
     } finally {
@@ -989,12 +1053,21 @@ export default function App() {
     }
   }
 
-  async function handleSetDeliveryCharge(orderId) {
-    if (!currentUser || currentUser.role !== "admin") return;
-    const chargeInput = window.prompt("Enter new delivery charge:", "0");
-    if (chargeInput === null) return;
+  function beginSetDeliveryCharge(order) {
+    setEditingDeliveryChargeOrderId(order._id);
+    setDeliveryChargeInput(String(order.deliveryCharge ?? 0));
+    setMessage("");
+  }
 
-    const deliveryCharge = Number(chargeInput) || 0;
+  async function handleSetDeliveryCharge(event, orderId) {
+    event.preventDefault();
+    if (!currentUser || currentUser.role !== "admin") return;
+
+    const deliveryCharge = Number(deliveryChargeInput);
+    if (!Number.isFinite(deliveryCharge) || deliveryCharge < 0) {
+      setMessage("Delivery charge must be a non-negative number.");
+      return;
+    }
 
     try {
       setSubmitting(true);
@@ -1002,6 +1075,7 @@ export default function App() {
       const response = await api.post(`/orders/${orderId}/delivery-charge`, { deliveryCharge });
       const updatedOrder = response.data;
       setDeliveryOrders((current) => current.map((order) => (order._id === updatedOrder._id ? updatedOrder : order)));
+      setEditingDeliveryChargeOrderId("");
       setMessage(`Delivery charge updated to ₹${deliveryCharge}.`);
     } catch (error) {
       setMessage(resolveError(error, "Failed to update delivery charge."));
@@ -1093,6 +1167,41 @@ export default function App() {
 
     } catch (error) {
       setMessage(resolveError(error, "Failed to initialize payment."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleExtendRental(e, order) {
+    e.preventDefault();
+    const requestedRentalDays = Number(e.currentTarget.elements.rentalDays.value);
+    const currentRentalDays = order.renter?.rentalDays || 0;
+
+    if (!Number.isInteger(requestedRentalDays) || requestedRentalDays <= currentRentalDays || requestedRentalDays > 20) {
+      setMessage("Choose a longer rental period, up to a maximum of 20 days.");
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      setMessage("");
+      const response = await api.post(`/orders/${order._id}/extend-rental`, {
+        rentalDays: requestedRentalDays,
+      });
+      setOrders((current) => current.map((item) => (
+        item._id === response.data._id ? response.data : item
+      )));
+      setRentalExtensionDays((current) => ({
+        ...current,
+        [order._id]: String(Math.min(requestedRentalDays + 1, 20)),
+      }));
+      setIsRentalExtensionOpen((current) => ({
+        ...current,
+        [order._id]: false,
+      }));
+      setMessage("Rental period extended. Pay the updated balance to complete payment.");
+    } catch (error) {
+      setMessage(resolveError(error, "Failed to extend rental."));
     } finally {
       setSubmitting(false);
     }
@@ -1373,13 +1482,7 @@ export default function App() {
       <main className="content-area">
         {activeSection === "auth" && (
           <section className="panel auth-panel">
-            <div className="section-heading auth-heading">
-              <div>
-                <p className="eyebrow">Authentication</p>
-                <h3>{currentUser ? "Your account" : authMode === "register" ? "Create your Rentera account" : "Welcome back to Rentera"}</h3>
-              </div>
-              {!currentUser && <p className="section-note">Choose your role to continue with the right workspace.</p>}
-            </div>
+            {!currentUser && <div className="section-heading auth-heading"><p className="eyebrow">Authentication</p></div>}
 
             {currentUser ? (
               <div className="profile-card auth-profile-card">
@@ -1398,16 +1501,6 @@ export default function App() {
               </div>
             ) : (
               <div className="auth-layout">
-                <div className="auth-copy">
-                  <span className="auth-kicker">{authRoles.find((roleOption) => roleOption.id === authRole)?.label || "User"} access</span>
-                  <h4>{authRole === "delivery" ? "Manage pickups and returns without switching screens." : authRole === "admin" ? "Control marketplace activity from one secure entry point." : "Rent, list, and track local items with one account."}</h4>
-                  <div className="auth-benefits">
-                    <span>Verified accounts</span>
-                    <span>Order tracking</span>
-                    <span>Role based dashboard</span>
-                  </div>
-                </div>
-
                 <form className="item-form auth-form" onSubmit={handleAuthSubmit}>
                   <div className="auth-tabs" aria-label="Account role">
                     {authRoles.map((roleOption) => (
@@ -1450,14 +1543,6 @@ export default function App() {
                       </button>
                     )}
                   </div>
-
-                  {authRole === "admin" && (
-                    <div className="credential-note">
-                      <strong>Admin credentials</strong>
-                      <span>Email: singh01@gmail.com</span>
-                      <span>Password: anshu1234</span>
-                    </div>
-                  )}
 
                   <div className="form-grid auth-form-grid">
                   {authMode === "forgot-password" ? (
@@ -1548,14 +1633,39 @@ export default function App() {
                       </label>
                       <label>
                         <span>Password</span>
-                        <input
-                          type="password"
-                          name="password"
-                          value={authFormState.password}
-                          onChange={handleAuthInputChange}
-                          placeholder="Minimum 6 characters"
-                          required
-                        />
+                        <div className="password-input-wrapper">
+                          <input
+                            type={showAuthPassword ? "text" : "password"}
+                            name="password"
+                            value={authFormState.password}
+                            onChange={handleAuthInputChange}
+                            placeholder="Minimum 6 characters"
+                            required
+                          />
+                          <button
+                            type="button"
+                            className="password-visibility-toggle"
+                            onClick={() => setShowAuthPassword((visible) => !visible)}
+                            aria-label={`${showAuthPassword ? "Hide" : "Show"} password`}
+                            title={`${showAuthPassword ? "Hide" : "Show"} password`}
+                          >
+                            <svg viewBox="0 0 24 24" aria-hidden="true">
+                              {showAuthPassword ? (
+                                <>
+                                  <path d="M3 3l18 18" />
+                                  <path d="M10.6 10.6a2 2 0 002.8 2.8" />
+                                  <path d="M9.9 5.2A10.8 10.8 0 0112 5c5 0 8.5 4.5 9.5 7-.4 1-1.2 2.2-2.3 3.3" />
+                                  <path d="M6.2 6.2C3.9 7.7 2.8 10 2.5 12c1 2.5 4.5 7 9.5 7 1.3 0 2.5-.3 3.5-.8" />
+                                </>
+                              ) : (
+                                <>
+                                  <path d="M2.5 12S6 5 12 5s9.5 7 9.5 7-3.5 7-9.5 7-9.5-7-9.5-7z" />
+                                  <circle cx="12" cy="12" r="3" />
+                                </>
+                              )}
+                            </svg>
+                          </button>
+                        </div>
                       </label>
                       {authMode === "register" && authRole === "user" && (
                         <label className="full-width checkbox-field">
@@ -1716,32 +1826,6 @@ export default function App() {
           <>
             {(currentRole === "guest" || currentRole === "user") && (
               <>
-                <section className="hero-card">
-                  <div className="hero-copy">
-                    {/* <p className="eyebrow">Flipkart-inspired rental marketplace</p> */}
-                    <h2> Hey! Let's Start Rent Something</h2>
-                    {/* <p>Use the top menu to add new items, track your listings, and review placed rental orders.</p> */}
-                  </div>
-                  <div className="hero-stat-grid">
-                    <button type="button" className="stat-card" onClick={() => setActiveSection("browse")}>
-                      <strong>{catalogItems.length}</strong>
-                      <span>Visible items</span>
-                    </button>
-                    {currentUser && (
-                      <>
-                        <button type="button" className="stat-card" onClick={() => setActiveSection("your-orders")}>
-                          <strong>{orders.length}</strong>
-                          <span>Your orders</span>
-                        </button>
-                        <button type="button" className="stat-card" onClick={() => setActiveSection("your-items")}>
-                          <strong>{allItems.length}</strong>
-                          <span>Your listed items</span>
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </section>
-
                 {selectedViewItemId ? (
                   <section className="item-detail-view">
                     <button className="secondary-button back-button" onClick={() => setSelectedViewItemId("")}>
@@ -1826,18 +1910,84 @@ export default function App() {
                   </section>
                 ) : (
                   <>
-                    <div className="section-heading">
+                    <section className="marketplace-hero" aria-labelledby="marketplace-title">
+                      <div className="marketplace-hero-copy">
+                        <p className="marketplace-kicker">
+                          <span aria-hidden="true" /> RENT BETTER, LIVE LIGHTER
+                        </p>
+                        <h2 id="marketplace-title">Good things are closer than you think.</h2>
+                        <p className="marketplace-intro">
+                          Discover useful finds from people nearby. Rent what you need, when you need it.
+                        </p>
+                        <a
+                          className="marketplace-cta"
+                          href="#marketplace-listings"
+                          onClick={(event) => {
+                            event.preventDefault();
+                            document.getElementById("marketplace-listings")?.scrollIntoView({ behavior: "smooth" });
+                          }}
+                        >
+                          Explore the collection <span aria-hidden="true">↘</span>
+                        </a>
+                      </div>
+                      <div className="marketplace-hero-aside">
+                        <span className="marketplace-aside-label">A little closer to home</span>
+                        <strong>Make room for more.</strong>
+                        <p>Find your next favorite without making it yours forever.</p>
+                        <div className="marketplace-hero-stats">
+                          <div>
+                            <strong>{catalogItems.length}</strong>
+                            <span>{catalogItems.length === 1 ? "item to explore" : "items to explore"}</span>
+                          </div>
+                          <div>
+                            <strong>{categories.length}</strong>
+                            <span>ways to find it</span>
+                          </div>
+                        </div>
+                        <div className="marketplace-category-links" aria-label="Popular categories">
+                          {["Electronics", "Furniture", "Books"].map((category) => {
+                            const categoryName = category === "Books" ? "Book" : category;
+                            return (
+                              <button
+                                key={category}
+                                type="button"
+                                className="marketplace-category-chip"
+                                onClick={() => {
+                                  setSelectedCategory(categoryName);
+                                  document.getElementById("marketplace-listings")?.scrollIntoView({ behavior: "smooth" });
+                                }}
+                              >
+                                {category} <span aria-hidden="true">↗</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </section>
+
+                    <div className="section-heading" id="marketplace-listings">
                       <div>
                         <p className="eyebrow">Available products</p>
                         <h3>Browse rental items</h3>
                       </div>
                       <div className="card-actions">
-                        {searchLocation && <span className="section-note">Showing items within {searchRadiusKm} km</span>}
-                        <button type="button" className="secondary-button" onClick={handleUseLocation} disabled={locationLoading}>
-                          {locationLoading ? "Finding location..." : searchLocation ? "Refresh location" : "Use my location"}
-                        </button>
-                        {searchLocation && (
-                          <button type="button" className="secondary-button" onClick={() => setSearchLocation(null)}>
+                        {searchLocation && selectedDistanceKm !== "all" && <span className="section-note">Showing items within {searchRadiusKm} km</span>}
+                        {locationLoading && <span className="section-note">Finding your location...</span>}
+                        <label className="distance-select">
+                          <span>Distance</span>
+                          <select
+                            value={selectedDistanceKm}
+                            onChange={handleDistanceChange}
+                            disabled={locationLoading}
+                          >
+                            <option value="all">All products</option>
+                            {[10, 20, 30, 50].map((distance) => (
+                              <option key={distance} value={distance}>{distance} km</option>
+                            ))}
+                          </select>
+                        </label>
+                        {searchLocation && selectedDistanceKm !== "all" && (
+                          <button type="button" className="secondary-button" onClick={() => setSelectedDistanceKm("all")}>
                             Show all
                           </button>
                         )}
@@ -1908,7 +2058,7 @@ export default function App() {
                           </label>
                           <label>
                             <span>No. of days for rent</span>
-                            <input type="number" name="rentalDays" value={rentFormState.rentalDays} onChange={handleRentInputChange} min="1" max="7" placeholder="3" required />
+                            <input type="number" name="rentalDays" value={rentFormState.rentalDays} onChange={handleRentInputChange} min="1" max="15" placeholder="3" required />
                           </label>
                         </div>
 
@@ -1994,7 +2144,7 @@ export default function App() {
                       </div>
                     ) : (
                       <div className="empty-state">
-                        {searchLocation
+                        {searchLocation && selectedDistanceKm !== "all"
                           ? `No ${selectedCategory === "all" ? "items" : `${selectedCategory.toLowerCase()} items`} found within ${searchRadiusKm} km. Try another category or show all items.`
                           : "No items found for this category."}
                       </div>
@@ -2225,7 +2375,76 @@ export default function App() {
                       </label>
                       <label>
                         <span>Password</span>
-                        <input type="password" name="password" value={adminDeliveryForm.password} onChange={handleAdminInputChange} placeholder="Min 6 chars" required />
+                        <div className="password-input-wrapper">
+                          <input
+                            type={showAdminDeliveryPassword ? "text" : "password"}
+                            name="password"
+                            value={adminDeliveryForm.password}
+                            onChange={handleAdminInputChange}
+                            placeholder="Min 6 chars"
+                            minLength="6"
+                            required
+                          />
+                          <button
+                            type="button"
+                            className="password-visibility-toggle"
+                            onClick={() => setShowAdminDeliveryPassword((visible) => !visible)}
+                            aria-label={`${showAdminDeliveryPassword ? "Hide" : "Show"} password`}
+                            title={`${showAdminDeliveryPassword ? "Hide" : "Show"} password`}
+                          >
+                            <svg viewBox="0 0 24 24" aria-hidden="true">
+                              {showAdminDeliveryPassword ? (
+                                <>
+                                  <path d="M3 3l18 18" />
+                                  <path d="M10.6 10.6a2 2 0 002.8 2.8" />
+                                  <path d="M9.9 5.2A10.8 10.8 0 0112 5c5 0 8.5 4.5 9.5 7-.4 1-1.2 2.2-2.3 3.3" />
+                                  <path d="M6.2 6.2C3.9 7.7 2.8 10 2.5 12c1 2.5 4.5 7 9.5 7 1.3 0 2.5-.3 3.5-.8" />
+                                </>
+                              ) : (
+                                <>
+                                  <path d="M2.5 12S6 5 12 5s9.5 7 9.5 7-3.5 7-9.5 7-9.5-7-9.5-7z" />
+                                  <circle cx="12" cy="12" r="3" />
+                                </>
+                              )}
+                            </svg>
+                          </button>
+                        </div>
+                      </label>
+                      <label>
+                        <span>Confirm password</span>
+                        <div className="password-input-wrapper">
+                          <input
+                            type={showAdminDeliveryConfirmPassword ? "text" : "password"}
+                            value={adminDeliveryConfirmPassword}
+                            onChange={(event) => setAdminDeliveryConfirmPassword(event.target.value)}
+                            placeholder="Re-enter password"
+                            minLength="6"
+                            required
+                          />
+                          <button
+                            type="button"
+                            className="password-visibility-toggle"
+                            onClick={() => setShowAdminDeliveryConfirmPassword((visible) => !visible)}
+                            aria-label={`${showAdminDeliveryConfirmPassword ? "Hide" : "Show"} confirm password`}
+                            title={`${showAdminDeliveryConfirmPassword ? "Hide" : "Show"} confirm password`}
+                          >
+                            <svg viewBox="0 0 24 24" aria-hidden="true">
+                              {showAdminDeliveryConfirmPassword ? (
+                                <>
+                                  <path d="M3 3l18 18" />
+                                  <path d="M10.6 10.6a2 2 0 002.8 2.8" />
+                                  <path d="M9.9 5.2A10.8 10.8 0 0112 5c5 0 8.5 4.5 9.5 7-.4 1-1.2 2.2-2.3 3.3" />
+                                  <path d="M6.2 6.2C3.9 7.7 2.8 10 2.5 12c1 2.5 4.5 7 9.5 7 1.3 0 2.5-.3 3.5-.8" />
+                                </>
+                              ) : (
+                                <>
+                                  <path d="M2.5 12S6 5 12 5s9.5 7 9.5 7-3.5 7-9.5 7-9.5-7-9.5-7z" />
+                                  <circle cx="12" cy="12" r="3" />
+                                </>
+                              )}
+                            </svg>
+                          </button>
+                        </div>
                       </label>
                       <label>
                         <span>Building no.</span>
@@ -2535,16 +2754,16 @@ export default function App() {
               <div className="section-heading">
                 <div>
                   <p className="eyebrow">Order history</p>
-                  <h3>Your order</h3>
+                  <h3>Your orders</h3>
                 </div>
               </div>
 
-              {/* Toggle */}
               <div className="order-view-toggle">
                 <button
                   type="button"
                   className={`order-toggle-btn ${orderView === "you-rent" ? "is-active" : ""}`}
                   onClick={() => setOrderView("you-rent")}
+                  aria-pressed={orderView === "you-rent"}
                 >
                   <span className="toggle-icon">🛒</span>
                   <span className="toggle-label">You Rent</span>
@@ -2554,6 +2773,7 @@ export default function App() {
                   type="button"
                   className={`order-toggle-btn ${orderView === "your-rent" ? "is-active" : ""}`}
                   onClick={() => setOrderView("your-rent")}
+                  aria-pressed={orderView === "your-rent"}
                 >
                   <span className="toggle-icon">📦</span>
                   <span className="toggle-label">Your Rent</span>
@@ -2561,19 +2781,20 @@ export default function App() {
                 </button>
                 <button
                   type="button"
-                  className="order-toggle-btn"
-                  style={{ marginLeft: "auto", border: "none", background: "transparent", cursor: "pointer", padding: "0 16px" }}
+                  className={`order-toggle-btn ${orderView === "money" ? "is-active" : ""}`}
                   onClick={() => {
-                    if (!showSellerEarningsModal) fetchSellerEarnings();
-                    setShowSellerEarningsModal(!showSellerEarningsModal);
+                    setOrderView("money");
+                    if (!sellerEarningsData) fetchSellerEarnings();
                   }}
                   title="90% of rent amount will add after complete delivery"
+                  aria-pressed={orderView === "money"}
                 >
-                  <span className="toggle-icon" style={{ fontSize: "1.5rem" }}>💰</span>
+                  <span className="toggle-icon">💰</span>
+                  <span className="toggle-label">Money</span>
                 </button>
               </div>
 
-              {showSellerEarningsModal && (
+              {orderView === "money" && (
                 <div className="panel" style={{ marginTop: "16px", backgroundColor: "#f9f9f9", border: "1px solid #ddd" }}>
                   <h4>Seller Earnings</h4>
                   <p style={{ fontSize: "0.9rem", color: "#666", marginBottom: "16px" }}>90% of rent amount will add after complete delivery</p>
@@ -2633,16 +2854,18 @@ export default function App() {
                 </div>
               )}
 
-              <p className="section-note order-view-desc">
-                {orderView === "you-rent"
-                  ? "Products you have rented from other users."
-                  : "Your products that someone else has currently rented."}
-              </p>
+              {orderView !== "money" && (
+                <p className="section-note order-view-desc">
+                  {orderView === "you-rent"
+                    ? "Products you have rented from other users."
+                    : "Your products that someone else has currently rented."}
+                </p>
+              )}
 
-              {activeOrders.length ? (
-                <div className="card-grid">
+              {orderView !== "money" && (activeOrders.length ? (
+                <div className="card-grid order-card-grid">
                   {activeOrders.map((order) => (
-                    <article key={order._id} className="info-card">
+                    <article key={order._id} className="info-card order-info-card">
                       <img src={order.item.media.mainImage} alt={order.item.brandName} />
                       <div className="card-body">
                         <div className="meta-row">
@@ -2664,6 +2887,14 @@ export default function App() {
                               <span>Rental days: {order.renter?.rentalDays || "Not available"}</span>
                             </>
                           )}
+                          {order.deliveredToRenterAt && (
+                            <span>
+                              Rented till: {new Date(
+                                new Date(order.deliveredToRenterAt).getTime()
+                                + (order.renter?.rentalDays || 0) * 24 * 60 * 60 * 1000
+                              ).toLocaleDateString()}
+                            </span>
+                          )}
                           <span>Delivery partner: {order.deliveryPartner?.username || "Waiting for partner"}</span>
                         </div>
                         <div className="delivery-stages-mini">
@@ -2671,11 +2902,48 @@ export default function App() {
                           <span className={`stage-dot ${order.deliveredToRenterAt ? "is-done" : ""}`} title="Delivered to renter">2</span>
                           <span className={`stage-dot ${order.pickedUpFromRenterAt ? "is-done" : ""}`} title="Picked up from renter">3</span>
                           <span className={`stage-dot ${order.returnedToSellerAt ? "is-done" : ""}`} title="Returned to owner">4</span>
+                          {orderView === "you-rent" && order.status === "DeliveredToRenter" && (order.renter?.rentalDays || 0) < 20 && getRentalEndDate(order) > new Date() && (
+                            <button
+                              type="button"
+                              className="rental-extension-toggle"
+                              aria-label={isRentalExtensionOpen[order._id] ? "Hide rental extension" : "Extend rental"}
+                              aria-expanded={!!isRentalExtensionOpen[order._id]}
+                              onClick={() => setIsRentalExtensionOpen((current) => ({
+                                ...current,
+                                [order._id]: !current[order._id],
+                              }))}
+                            >
+                              +
+                            </button>
+                          )}
                         </div>
+                        {orderView === "you-rent" && isRentalExtensionOpen[order._id] && order.status === "DeliveredToRenter" && (order.renter?.rentalDays || 0) < 20 && getRentalEndDate(order) > new Date() && (
+                          <form onSubmit={(e) => handleExtendRental(e, order)} style={{ display: "flex", alignItems: "flex-end", gap: "10px", flexWrap: "wrap", marginTop: "16px" }}>
+                            <label style={{ flex: "1 1 180px" }}>
+                              <span style={{ display: "block", marginBottom: "4px", fontSize: "0.9rem" }}>Extend rental (up to 20 total days)</span>
+                              <input
+                                type="number"
+                                name="rentalDays"
+                                min={(order.renter?.rentalDays || 0) + 1}
+                                max="20"
+                                value={rentalExtensionDays[order._id] ?? String((order.renter?.rentalDays || 0) + 1)}
+                                onChange={(e) => setRentalExtensionDays((current) => ({
+                                  ...current,
+                                  [order._id]: e.target.value,
+                                }))}
+                                required
+                                style={{ width: "100%", padding: "8px" }}
+                              />
+                            </label>
+                            <button type="submit" className="secondary-button" disabled={submitting}>
+                              Extend rental
+                            </button>
+                          </form>
+                        )}
                         {orderView === "you-rent" && order.status !== "Placed" && !order.isPaid && (
                           <div style={{ marginTop: "16px" }}>
                             <button type="button" className="primary-button" onClick={() => handlePayment(order)} disabled={submitting}>
-                              Pay ₹{(order.item.rentCost * (order.renter?.rentalDays || 1)) + (order.deliveryCharge || 0)} Now
+                              Pay ₹{(Math.max(0, (order.renter?.rentalDays || 1) - (order.paidRentalDays || 0)) * order.item.rentCost) + ((order.paidRentalDays || 0) === 0 ? (order.deliveryCharge || 0) : 0)} Now
                             </button>
                           </div>
                         )}
@@ -2708,7 +2976,7 @@ export default function App() {
                     ? "You haven't rented any items yet."
                     : "No one has rented your items yet."}
                 </div>
-              )}
+              ))}
             </section>
           );
         })()}
@@ -2876,13 +3144,7 @@ export default function App() {
                             )}
                           </div>
                           <span>
-                            Rented till: {(() => {
-                              const days = order.renter?.rentalDays || 0;
-                              if (!days) return "Not available";
-                              const start = order.deliveredToRenterAt ? new Date(order.deliveredToRenterAt) : new Date(order.createdAt);
-                              const end = new Date(start.getTime() + days * 24 * 60 * 60 * 1000);
-                              return end.toLocaleDateString();
-                            })()}
+                            Rented till: {getRentalEndDate(order)?.toLocaleDateString() || "Not available"}
                           </span>
                           <span>
                             Delivery partner: {order.deliveryPartner?.username || "Not assigned yet"}
@@ -2917,7 +3179,7 @@ export default function App() {
                             <input
                               type="checkbox"
                               checked={!!order.pickedUpFromRenterAt}
-                              disabled={!canChangeStatus || !order.deliveredToRenterAt || !!order.pickedUpFromRenterAt || submitting}
+                              disabled={!canChangeStatus || !order.deliveredToRenterAt || !!order.pickedUpFromRenterAt || (currentUser?.role === "delivery" && !order.isPaid) || submitting}
                               onChange={() => handleUpdateOrderStatus(order._id, "PickedUpFromRenter")}
                             />
                             <span>3. Pickup from Renter</span>
@@ -2926,11 +3188,14 @@ export default function App() {
                             <input
                               type="checkbox"
                               checked={!!order.returnedToSellerAt}
-                              disabled={!canChangeStatus || !order.pickedUpFromRenterAt || !!order.returnedToSellerAt || submitting}
+                              disabled={!canChangeStatus || !order.pickedUpFromRenterAt || !!order.returnedToSellerAt || (currentUser?.role === "delivery" && !order.isPaid) || submitting}
                               onChange={() => handleUpdateOrderStatus(order._id, "ReturnedToSeller")}
                             />
                             <span>4. Return to Owner</span>
                           </label>
+                          {currentUser?.role === "delivery" && !order.isPaid && (
+                            <p className="section-note">Payment is required before steps 3 and 4 can be completed.</p>
+                          )}
                         </div>
                         {currentUser?.role === "delivery" && isAvailable && (
                           <div className="card-actions">
@@ -2947,9 +3212,41 @@ export default function App() {
                               </button>
                             )}
                             {order.status !== "Placed" && (
-                              <button type="button" className="secondary-button" onClick={() => handleSetDeliveryCharge(order._id)} disabled={submitting}>
-                                Set Delivery Charge
-                              </button>
+                              editingDeliveryChargeOrderId === order._id ? (
+                                <form
+                                  className="card-actions"
+                                  onSubmit={(event) => handleSetDeliveryCharge(event, order._id)}
+                                  style={{ marginTop: 0, alignItems: "flex-end" }}
+                                >
+                                  <label>
+                                    <span>Delivery charge (₹)</span>
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      step="0.01"
+                                      value={deliveryChargeInput}
+                                      onChange={(event) => setDeliveryChargeInput(event.target.value)}
+                                      required
+                                      disabled={submitting}
+                                    />
+                                  </label>
+                                  <button type="submit" className="primary-button" disabled={submitting}>
+                                    {submitting ? "Saving..." : "Save charge"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="secondary-button"
+                                    onClick={() => setEditingDeliveryChargeOrderId("")}
+                                    disabled={submitting}
+                                  >
+                                    Cancel
+                                  </button>
+                                </form>
+                              ) : (
+                                <button type="button" className="secondary-button" onClick={() => beginSetDeliveryCharge(order)} disabled={submitting}>
+                                  Set Delivery Charge
+                                </button>
+                              )
                             )}
                             <button type="button" className="primary-button" style={{ backgroundColor: "#d32f2f", color: "white" }} onClick={() => handleDeleteOrder(order._id)} disabled={submitting}>
                               Delete Order
@@ -3081,5 +3378,13 @@ export default function App() {
 }
 
 function resolveError(error, fallbackMessage) {
-  return error?.response?.data?.message || fallbackMessage;
+  if (error?.response?.data?.message) {
+    return error.response.data.message;
+  }
+
+  if (error?.request && !error.response) {
+    return "Unable to reach the server. Check your connection and try again.";
+  }
+
+  return error?.message || fallbackMessage;
 }

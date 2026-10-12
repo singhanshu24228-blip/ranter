@@ -91,6 +91,11 @@ const orderSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    paidRentalDays: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
     razorpayPaymentId: {
       type: String,
       default: null,

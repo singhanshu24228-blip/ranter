@@ -4,7 +4,8 @@ import { Item } from "../models/Item.js";
 import { Order } from "../models/Order.js";
 import { hashPassword, verifyPassword } from "../utils/password.js";
 import { sendEmail } from "../utils/email.js";
-import crypto from "crypto";
+import { clearOtp, consumeOtp, createOtp, storeOtp } from "../utils/otp.js";
+import { destroySession, establishSession } from "../middleware/session.js";
 
 function sanitizeUser(user) {
   return {
@@ -68,7 +69,9 @@ export async function registerUser(req, res) {
     address: normalizedRole === "delivery" ? address.trim() : "",
   });
 
-  res.status(201).json({ user: sanitizeUser(user) });
+  const sanitizedUser = sanitizeUser(user);
+  await establishSession(req, sanitizedUser);
+  res.status(201).json({ user: sanitizedUser });
 }
 
 export async function loginUser(req, res) {
@@ -86,19 +89,23 @@ export async function loginUser(req, res) {
   const normalizedEmail = email.trim().toLowerCase();
 
   if (normalizedRole === "admin") {
-    if (normalizedEmail !== "singh01@gmail.com" || password !== "anshu1234") {
+    const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
+    const adminPassword = process.env.ADMIN_PASSWORD;
+    if (!adminEmail || !adminPassword || normalizedEmail !== adminEmail || password !== adminPassword) {
       return res.status(401).json({ message: "Invalid admin email or password." });
     }
 
+    const user = {
+      _id: "admin-fixed-user",
+      username: "Admin",
+      email: adminEmail,
+      phoneNumber: "",
+      role: "admin",
+      address: "",
+    };
+    await establishSession(req, user);
     return res.json({
-      user: {
-        _id: "admin-fixed-user",
-        username: "Admin",
-        email: "singh01@gmail.com",
-        phoneNumber: "",
-        role: "admin",
-        address: "",
-      },
+      user,
     });
   }
 
@@ -108,15 +115,13 @@ export async function loginUser(req, res) {
     return res.status(401).json({ message: "Invalid email or password." });
   }
 
-  res.json({ user: sanitizeUser(user) });
+  const sanitizedUser = sanitizeUser(user);
+  await establishSession(req, sanitizedUser);
+  res.json({ user: sanitizedUser });
 }
 
 export async function registerDelivery(req, res) {
-  const { adminEmail, adminPassword, username, email, phoneNumber, password, address } = req.body;
-
-  if (adminEmail !== "singh01@gmail.com" || adminPassword !== "anshu1234") {
-    return res.status(401).json({ message: "Unauthorized. Only admin can create delivery accounts." });
-  }
+  const { username, email, phoneNumber, password, address } = req.body;
 
   if (!String(username || "").trim()) {
     return res.status(400).json({ message: "Username is required." });
@@ -172,11 +177,11 @@ export async function updateUser(req, res) {
   if (phoneNumber !== undefined) user.phoneNumber = phoneNumber;
 
   await user.save();
+  req.session.user = sanitizeUser(user);
   res.json({ user: sanitizeUser(user) });
 }
 
 export async function forgotPassword(req, res) {
-  console.log("Forgot password request received for email:", req.body.email);
   const { email } = req.body;
 
   if (!email) {
@@ -188,12 +193,9 @@ export async function forgotPassword(req, res) {
     return res.status(404).json({ message: "User not found." });
   }
 
-  // Generate 6-digit OTP
-  const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  
-  user.resetOTP = otp;
-  user.resetOTPExpires = Date.now() + 10 * 60 * 1000; // 10 minutes expiry
-  await user.save();
+  const otp = createOtp();
+  const otpKey = `otp:password-reset:${user.email}`;
+  await storeOtp(otpKey, otp);
 
   try {
     await sendEmail(
@@ -203,6 +205,7 @@ export async function forgotPassword(req, res) {
     );
     res.json({ message: "OTP sent to your email." });
   } catch (error) {
+    await clearOtp(otpKey);
     res.status(500).json({ message: "Error sending email." });
   }
 }
@@ -214,41 +217,40 @@ export async function resetPassword(req, res) {
     return res.status(400).json({ message: "Email, OTP, and new password are required." });
   }
 
-  const user = await User.findOne({ 
-    email: email.trim().toLowerCase(),
-    resetOTP: otp,
-    resetOTPExpires: { $gt: Date.now() }
-  });
+  if (newPassword.length < 6) {
+    return res.status(400).json({ message: "Password must be at least 6 characters." });
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+  const validOtp = await consumeOtp(`otp:password-reset:${normalizedEmail}`, otp);
+  const user = validOtp ? await User.findOne({ email: normalizedEmail }) : null;
 
   if (!user) {
     return res.status(400).json({ message: "Invalid or expired OTP." });
   }
 
-  if (newPassword.length < 6) {
-    return res.status(400).json({ message: "Password must be at least 6 characters." });
-  }
-
   user.passwordHash = hashPassword(newPassword);
-  user.resetOTP = undefined;
-  user.resetOTPExpires = undefined;
   await user.save();
 
   res.json({ message: "Password reset successful." });
 }
 
 export async function sendVerificationOtp(req, res) {
-  const { userId } = req.body;
+  const { purpose = "email-change" } = req.body;
+  const userId = req.user._id;
+
+  if (!["email-change", "account-deletion"].includes(purpose)) {
+    return res.status(400).json({ message: "Invalid verification purpose." });
+  }
 
   const user = await User.findById(userId);
   if (!user) {
     return res.status(404).json({ message: "User not found." });
   }
 
-  const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  
-  user.resetOTP = otp;
-  user.resetOTPExpires = Date.now() + 10 * 60 * 1000;
-  await user.save();
+  const otp = createOtp();
+  const otpKey = `otp:${purpose}:${userId}`;
+  await storeOtp(otpKey, otp);
 
   try {
     await sendEmail(
@@ -258,12 +260,14 @@ export async function sendVerificationOtp(req, res) {
     );
     res.json({ message: "OTP sent to your email." });
   } catch (error) {
+    await clearOtp(otpKey);
     res.status(500).json({ message: "Error sending email." });
   }
 }
 
 export async function changeEmail(req, res) {
-  const { userId, otp, newEmail } = req.body;
+  const { otp, newEmail } = req.body;
+  const userId = req.user._id;
 
   if (!userId || !otp || !newEmail) {
     return res.status(400).json({ message: "User ID, OTP, and new email are required." });
@@ -273,14 +277,13 @@ export async function changeEmail(req, res) {
     return res.status(400).json({ message: "New email must be valid." });
   }
 
-  const user = await User.findOne({ 
-    _id: userId,
-    resetOTP: otp,
-    resetOTPExpires: { $gt: Date.now() }
-  });
-
-  if (!user) {
+  if (!await consumeOtp(`otp:email-change:${userId}`, otp)) {
     return res.status(400).json({ message: "Invalid or expired OTP." });
+  }
+
+  const user = await User.findById(userId);
+  if (!user) {
+    return res.status(404).json({ message: "User not found." });
   }
 
   const existingEmail = await User.findOne({ email: newEmail.trim().toLowerCase() });
@@ -289,28 +292,28 @@ export async function changeEmail(req, res) {
   }
 
   user.email = newEmail.trim().toLowerCase();
-  user.resetOTP = undefined;
-  user.resetOTPExpires = undefined;
   await user.save();
 
-  res.json({ message: "Email changed successfully.", user: sanitizeUser(user) });
+  const sanitizedUser = sanitizeUser(user);
+  req.session.user = sanitizedUser;
+  res.json({ message: "Email changed successfully.", user: sanitizedUser });
 }
 
 export async function deleteAccount(req, res) {
-  const { userId, otp } = req.body;
+  const { otp } = req.body;
+  const userId = req.user._id;
 
   if (!userId || !otp) {
     return res.status(400).json({ message: "User ID and OTP are required." });
   }
 
-  const user = await User.findOne({ 
-    _id: userId,
-    resetOTP: otp,
-    resetOTPExpires: { $gt: Date.now() }
-  });
-
-  if (!user) {
+  if (!await consumeOtp(`otp:account-deletion:${userId}`, otp)) {
     return res.status(400).json({ message: "Invalid or expired OTP." });
+  }
+
+  const user = await User.findById(userId);
+  if (!user) {
+    return res.status(404).json({ message: "User not found." });
   }
 
   const userItems = await Item.find({ ownerUser: userId });
@@ -322,5 +325,29 @@ export async function deleteAccount(req, res) {
 
   await User.findByIdAndDelete(userId);
 
+  await destroySession(req);
+  res.clearCookie("ranter.sid", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+  });
   res.json({ message: "Account deleted successfully." });
+}
+
+export function getSession(req, res) {
+  res.json({ user: req.session?.user || null });
+}
+
+export async function logout(req, res) {
+  if (req.session) {
+    await destroySession(req);
+  }
+  res.clearCookie("ranter.sid", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+  });
+  res.json({ message: "Logged out successfully." });
 }

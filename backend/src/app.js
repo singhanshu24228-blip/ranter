@@ -8,8 +8,14 @@ import orderRoutes from "./routes/orderRoutes.js";
 import earningRoutes from "./routes/earningRoutes.js";
 import paymentRoutes from "./routes/paymentRoutes.js";
 import { errorHandler, notFound } from "./middleware/errorHandler.js";
+import { sessionMiddleware } from "./middleware/session.js";
+import { redisClient } from "./config/redis.js";
 
 const app = express();
+
+if (process.env.NODE_ENV === "production") {
+  app.set("trust proxy", 1);
+}
 
 app.use(
   cors({
@@ -21,9 +27,15 @@ app.use(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan("dev"));
+app.use(sessionMiddleware);
 
-app.get("/api/health", (_req, res) => {
-  res.json({ ok: true });
+app.get("/api/health", async (_req, res) => {
+  try {
+    await redisClient.ping();
+    res.json({ ok: true, redis: "connected" });
+  } catch {
+    res.status(503).json({ ok: false, redis: "unavailable" });
+  }
 });
 
 app.use("/api/auth", authRoutes);
