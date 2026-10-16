@@ -13,8 +13,9 @@ import { redisClient } from "./config/redis.js";
 
 const app = express();
 
-if (process.env.NODE_ENV === "production") {
-  app.set("trust proxy", 1);
+const trustedProxies = process.env.TRUSTED_PROXIES?.split(",").map((proxy) => proxy.trim()).filter(Boolean);
+if (trustedProxies?.length) {
+  app.set("trust proxy", trustedProxies);
 }
 
 app.use(

@@ -39,6 +39,8 @@ The frontend uses `http://localhost:5000/api` during development by default. Set
 
 In production, the Express server serves `frontend/dist` when it exists, and the frontend uses the same server's `/api` by default. Set `VITE_API_URL` at frontend build time only when hosting the frontend separately.
 
+Forwarded client IP headers are not trusted by default. If deploying behind a reverse proxy, set `TRUSTED_PROXIES` to a comma-separated list of the proxy IPs or CIDRs, ensure the app is reachable only through those proxies, and configure them to overwrite/sanitize `X-Forwarded-For`. This is important because API rate limits use the client IP.
+
 ## Continuous integration
 
 GitHub Actions runs on pushes and pull requests. The workflow installs backend and frontend dependencies from their lockfiles, checks backend JavaScript syntax, and builds the frontend with Node.js 22. The project does not currently define a backend test suite or lint script, so those checks are not part of CI.
